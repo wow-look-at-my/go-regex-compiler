@@ -1,4 +1,4 @@
-package regexcompiler_test
+package e2e_test
 
 import (
 	"bytes"
