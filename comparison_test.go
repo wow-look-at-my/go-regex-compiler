@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
@@ -69,22 +71,16 @@ var testInputs = []string{
 func generate(t *testing.T, pattern string) []byte {
 	t.Helper()
 	prog, err := parser.Parse(pattern)
-	if err != nil {
-		t.Fatalf("parser.Parse(%q): %v", pattern, err)
-	}
+	require.NoError(t, err)
 	d, err := dfa.Build(prog)
-	if err != nil {
-		t.Fatalf("dfa.Build(%q): %v", pattern, err)
-	}
+	require.NoError(t, err)
 	var buf bytes.Buffer
 	opts := codegen.Options{
 		PackageName: "main",
 		FuncName:    "Match",
 		Regex:       pattern,
 	}
-	if err := codegen.Generate(&buf, d, opts); err != nil {
-		t.Fatalf("codegen.Generate(%q): %v", pattern, err)
-	}
+	require.NoError(t, codegen.Generate(&buf, d, opts))
 	return buf.Bytes()
 }
 
@@ -101,11 +97,8 @@ func TestCorrectnessVsRegexp(t *testing.T) {
 			src := generate(t, tp.pattern)
 			re := anchoredRegexp(tp.pattern)
 
-			// Build a program that tests every input and reports mismatches
 			tmpDir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644))
 
 			var harness bytes.Buffer
 			harness.WriteString("package main\n\n")
@@ -124,22 +117,17 @@ func TestCorrectnessVsRegexp(t *testing.T) {
 			harness.WriteString("\tif failed {\n\t\tos.Exit(1)\n\t}\n")
 			harness.WriteString("\tfmt.Println(\"PASS\")\n}\n")
 
-			if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644))
 
 			initCmd := exec.Command("go", "mod", "init", "testmod")
 			initCmd.Dir = tmpDir
-			if out, err := initCmd.CombinedOutput(); err != nil {
-				t.Fatalf("go mod init: %v\n%s", err, out)
-			}
+			out, err := initCmd.CombinedOutput()
+			require.NoError(t, err, "go mod init: %s", out)
 
 			runCmd := exec.Command("go", "run", ".")
 			runCmd.Dir = tmpDir
-			out, err := runCmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("correctness mismatch for pattern %q:\n%s", tp.pattern, out)
-			}
+			out, err = runCmd.CombinedOutput()
+			assert.NoError(t, err, "correctness mismatch for pattern %q:\n%s", tp.pattern, out)
 		})
 	}
 }
@@ -150,6 +138,7 @@ func TestCodeSize(t *testing.T) {
 		t.Run(tp.name, func(t *testing.T) {
 			src := generate(t, tp.pattern)
 			lines := bytes.Count(src, []byte("\n"))
+			assert.NotEmpty(t, src, "generated code should not be empty")
 			t.Logf("pattern=%-35s  bytes=%-6d  lines=%-4d", fmt.Sprintf("%q", tp.pattern), len(src), lines)
 		})
 	}
@@ -167,16 +156,12 @@ func TestBenchmarkVsRegexp(t *testing.T) {
 			src := generate(t, tp.pattern)
 			tmpDir := t.TempDir()
 
-			if err := os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644))
 
-			// Create a benchmark file that tests both approaches
 			var bench bytes.Buffer
 			bench.WriteString("package main\n\n")
 			bench.WriteString("import (\n\t\"regexp\"\n\t\"testing\"\n)\n\n")
 
-			// Pick representative inputs: one that matches, one that doesn't, one long
 			re := anchoredRegexp(tp.pattern)
 			var matchInput, noMatchInput string
 			for _, input := range testInputs {
@@ -199,35 +184,30 @@ func TestBenchmarkVsRegexp(t *testing.T) {
 
 			fmt.Fprintf(&bench, "var re = regexp.MustCompile(%q)\n\n", "^(?:"+tp.pattern+")$")
 
-			// Benchmark generated code - match
 			fmt.Fprintf(&bench, "func BenchmarkGenerated_Match(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", matchInput)
 			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
 			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n\n")
 
-			// Benchmark regexp - match
 			fmt.Fprintf(&bench, "func BenchmarkRegexp_Match(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", matchInput)
 			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
 			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n\n")
 
-			// Benchmark generated code - no match
 			fmt.Fprintf(&bench, "func BenchmarkGenerated_NoMatch(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", noMatchInput)
 			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
 			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n\n")
 
-			// Benchmark regexp - no match
 			fmt.Fprintf(&bench, "func BenchmarkRegexp_NoMatch(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", noMatchInput)
 			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
 			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n\n")
 
-			// Benchmark generated code - long input
 			longInput := strings.Repeat(matchInput+"x", 100)
 			fmt.Fprintf(&bench, "func BenchmarkGenerated_Long(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", longInput)
@@ -235,29 +215,23 @@ func TestBenchmarkVsRegexp(t *testing.T) {
 			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n\n")
 
-			// Benchmark regexp - long input
 			fmt.Fprintf(&bench, "func BenchmarkRegexp_Long(b *testing.B) {\n")
 			fmt.Fprintf(&bench, "\tinput := %q\n", longInput)
 			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
 			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
 			fmt.Fprintf(&bench, "\t}\n}\n")
 
-			if err := os.WriteFile(filepath.Join(tmpDir, "matcher_test.go"), bench.Bytes(), 0644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher_test.go"), bench.Bytes(), 0644))
 
 			initCmd := exec.Command("go", "mod", "init", "testmod")
 			initCmd.Dir = tmpDir
-			if out, err := initCmd.CombinedOutput(); err != nil {
-				t.Fatalf("go mod init: %v\n%s", err, out)
-			}
+			out, err := initCmd.CombinedOutput()
+			require.NoError(t, err, "go mod init: %s", out)
 
 			runCmd := exec.Command("go", "test", "-bench=.", "-benchmem", "-count=1", "-benchtime=100ms")
 			runCmd.Dir = tmpDir
-			out, err := runCmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("benchmark failed for %q:\n%s", tp.pattern, out)
-			}
+			out, err = runCmd.CombinedOutput()
+			require.NoError(t, err, "benchmark failed for %q:\n%s", tp.pattern, out)
 
 			t.Logf("pattern %q:\n%s", tp.pattern, out)
 		})

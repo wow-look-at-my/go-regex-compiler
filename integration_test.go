@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
@@ -217,16 +219,11 @@ func TestIntegration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.regex, func(t *testing.T) {
-			// Build the pipeline
 			prog, err := parser.Parse(tt.regex)
-			if err != nil {
-				t.Fatalf("parser.Parse(%q): %v", tt.regex, err)
-			}
+			require.NoError(t, err)
 
 			d, err := dfa.Build(prog)
-			if err != nil {
-				t.Fatalf("dfa.Build(%q): %v", tt.regex, err)
-			}
+			require.NoError(t, err)
 
 			var buf bytes.Buffer
 			opts := codegen.Options{
@@ -235,19 +232,13 @@ func TestIntegration(t *testing.T) {
 				Regex:       tt.regex,
 			}
 			err = codegen.Generate(&buf, d, opts)
-			if err != nil {
-				t.Fatalf("codegen.Generate(%q): %v", tt.regex, err)
-			}
+			require.NoError(t, err)
 
-			// Write generated code + test harness to temp directory
 			tmpDir := t.TempDir()
 
 			err = os.WriteFile(filepath.Join(tmpDir, "matcher.go"), buf.Bytes(), 0644)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			// Build test harness
 			var harness bytes.Buffer
 			fmt.Fprintln(&harness, "package main")
 			fmt.Fprintln(&harness, "")
@@ -271,24 +262,17 @@ func TestIntegration(t *testing.T) {
 			fmt.Fprintln(&harness, "}")
 
 			err = os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			// Initialize a go module in the temp directory
 			initCmd := exec.Command("go", "mod", "init", "testmod")
 			initCmd.Dir = tmpDir
-			if out, err := initCmd.CombinedOutput(); err != nil {
-				t.Fatalf("go mod init failed: %v\n%s", err, out)
-			}
+			out, err := initCmd.CombinedOutput()
+			require.NoError(t, err, "go mod init failed: %s", out)
 
-			// Run the generated program
 			runCmd := exec.Command("go", "run", ".")
 			runCmd.Dir = tmpDir
-			out, err := runCmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("generated code failed for regex %q:\n%s", tt.regex, out)
-			}
+			out, err = runCmd.CombinedOutput()
+			assert.NoError(t, err, "generated code failed for regex %q:\n%s", tt.regex, out)
 		})
 	}
 }

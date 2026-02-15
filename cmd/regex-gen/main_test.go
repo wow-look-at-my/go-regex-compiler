@@ -3,34 +3,38 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestRunToStdout(t *testing.T) {
-	// Capture stdout
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
 	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
 	os.Stdout = w
 
-	err := run("[a-z]+", "mypkg", "MatchLower", "")
+	fn()
+
 	w.Close()
 	os.Stdout = oldStdout
 
-	if err != nil {
-		t.Fatalf("run() error: %v", err)
-	}
-
-	buf := make([]byte, 4096)
+	buf := make([]byte, 16384)
 	n, _ := r.Read(buf)
-	output := string(buf[:n])
+	return string(buf[:n])
+}
 
-	if !strings.Contains(output, "package mypkg") {
-		t.Error("output missing package declaration")
-	}
-	if !strings.Contains(output, "func MatchLower(input string) bool") {
-		t.Error("output missing function declaration")
-	}
+func TestRunToStdout(t *testing.T) {
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run("[a-z]+", "mypkg", "MatchLower", "")
+	})
+	require.NoError(t, runErr)
+
+	assert.Contains(t, output, "package mypkg")
+	assert.Contains(t, output, "func MatchLower(input string) bool")
 }
 
 func TestRunToFile(t *testing.T) {
@@ -38,88 +42,86 @@ func TestRunToFile(t *testing.T) {
 	outFile := filepath.Join(tmpDir, "match.go")
 
 	err := run("[0-9]+", "testpkg", "MatchDigits", outFile)
-	if err != nil {
-		t.Fatalf("run() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	content, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	require.NoError(t, err)
 
 	output := string(content)
-	if !strings.Contains(output, "package testpkg") {
-		t.Error("output missing package declaration")
-	}
-	if !strings.Contains(output, "func MatchDigits(input string) bool") {
-		t.Error("output missing function declaration")
-	}
+	assert.Contains(t, output, "package testpkg")
+	assert.Contains(t, output, "func MatchDigits(input string) bool")
 }
 
 func TestRunMissingRegex(t *testing.T) {
 	err := run("", "pkg", "Match", "")
-	if err == nil {
-		t.Error("expected error for missing regex")
-	}
+	assert.Error(t, err)
 }
 
 func TestRunInvalidRegex(t *testing.T) {
 	err := run("[unclosed", "pkg", "Match", "")
-	if err == nil {
-		t.Error("expected error for invalid regex")
-	}
+	assert.Error(t, err)
 }
 
 func TestRunDefaultPackage(t *testing.T) {
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := run("abc", "", "Match", "")
-	w.Close()
-	os.Stdout = oldStdout
-
-	if err != nil {
-		t.Fatalf("run() error: %v", err)
-	}
-
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
-
-	// Should default to "main" when GOPACKAGE is not set
-	if !strings.Contains(output, "package main") {
-		t.Error("should default to package main")
-	}
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run("abc", "", "Match", "")
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, output, "package main")
 }
 
 func TestRunGOPACKAGEEnv(t *testing.T) {
 	t.Setenv("GOPACKAGE", "envpkg")
 
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := run("abc", "", "Match", "")
-	w.Close()
-	os.Stdout = oldStdout
-
-	if err != nil {
-		t.Fatalf("run() error: %v", err)
-	}
-
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
-
-	if !strings.Contains(output, "package envpkg") {
-		t.Error("should use GOPACKAGE env var")
-	}
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run("abc", "", "Match", "")
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, output, "package envpkg")
 }
 
 func TestRunInvalidOutputPath(t *testing.T) {
 	err := run("abc", "pkg", "Match", "/nonexistent/dir/file.go")
-	if err == nil {
-		t.Error("expected error for invalid output path")
+	assert.Error(t, err)
+}
+
+func TestRunComplexPatterns(t *testing.T) {
+	patterns := []struct {
+		name    string
+		pattern string
+	}{
+		{"email", `[a-z]+@[a-z]+\.[a-z]{2,}`},
+		{"ssn", `\d{3}-\d{2}-\d{4}`},
+		{"url", `(https?://)?[a-z]+\.[a-z]{2,}`},
 	}
+
+	for _, tt := range patterns {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			outFile := filepath.Join(tmpDir, "match.go")
+
+			err := run(tt.pattern, "pkg", "Match", outFile)
+			require.NoError(t, err)
+
+			content, err := os.ReadFile(outFile)
+			require.NoError(t, err)
+			assert.Contains(t, string(content), "func Match(input string) bool")
+		})
+	}
+}
+
+func TestRunExplicitPackageOverridesEnv(t *testing.T) {
+	t.Setenv("GOPACKAGE", "envpkg")
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run("abc", "explicit", "Match", "")
+	})
+	require.NoError(t, runErr)
+
+	// Explicit -package flag should win over $GOPACKAGE
+	assert.Contains(t, output, "package explicit")
+	assert.NotContains(t, output, "package envpkg")
 }
