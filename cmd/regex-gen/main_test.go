@@ -29,7 +29,7 @@ func captureStdout(t *testing.T, fn func()) string {
 func TestRunToStdout(t *testing.T) {
 	var runErr error
 	output := captureStdout(t, func() {
-		runErr = run("[a-z]+", "mypkg", "MatchLower", "")
+		runErr = run("[a-z]+", "mypkg", "MatchLower", "", "full", false, "FindSubmatch")
 	})
 	require.NoError(t, runErr)
 
@@ -41,7 +41,7 @@ func TestRunToFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	outFile := filepath.Join(tmpDir, "match.go")
 
-	err := run("[0-9]+", "testpkg", "MatchDigits", outFile)
+	err := run("[0-9]+", "testpkg", "MatchDigits", outFile, "full", false, "FindSubmatch")
 	require.NoError(t, err)
 
 	content, err := os.ReadFile(outFile)
@@ -53,19 +53,19 @@ func TestRunToFile(t *testing.T) {
 }
 
 func TestRunMissingRegex(t *testing.T) {
-	err := run("", "pkg", "Match", "")
+	err := run("", "pkg", "Match", "", "full", false, "FindSubmatch")
 	assert.Error(t, err)
 }
 
 func TestRunInvalidRegex(t *testing.T) {
-	err := run("[unclosed", "pkg", "Match", "")
+	err := run("[unclosed", "pkg", "Match", "", "full", false, "FindSubmatch")
 	assert.Error(t, err)
 }
 
 func TestRunDefaultPackage(t *testing.T) {
 	var runErr error
 	output := captureStdout(t, func() {
-		runErr = run("abc", "", "Match", "")
+		runErr = run("abc", "", "Match", "", "full", false, "FindSubmatch")
 	})
 	require.NoError(t, runErr)
 	assert.Contains(t, output, "package main")
@@ -76,14 +76,14 @@ func TestRunGOPACKAGEEnv(t *testing.T) {
 
 	var runErr error
 	output := captureStdout(t, func() {
-		runErr = run("abc", "", "Match", "")
+		runErr = run("abc", "", "Match", "", "full", false, "FindSubmatch")
 	})
 	require.NoError(t, runErr)
 	assert.Contains(t, output, "package envpkg")
 }
 
 func TestRunInvalidOutputPath(t *testing.T) {
-	err := run("abc", "pkg", "Match", "/nonexistent/dir/file.go")
+	err := run("abc", "pkg", "Match", "/nonexistent/dir/file.go", "full", false, "FindSubmatch")
 	assert.Error(t, err)
 }
 
@@ -102,7 +102,7 @@ func TestRunComplexPatterns(t *testing.T) {
 			tmpDir := t.TempDir()
 			outFile := filepath.Join(tmpDir, "match.go")
 
-			err := run(tt.pattern, "pkg", "Match", outFile)
+			err := run(tt.pattern, "pkg", "Match", outFile, "full", false, "FindSubmatch")
 			require.NoError(t, err)
 
 			content, err := os.ReadFile(outFile)
@@ -112,12 +112,30 @@ func TestRunComplexPatterns(t *testing.T) {
 	}
 }
 
+func TestRunWithSubmatch(t *testing.T) {
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run(`([a-z]+)@([a-z]+)`, "mypkg", "MatchEmail", "", "full", true, "FindEmailSubmatch")
+	})
+	require.NoError(t, runErr)
+
+	assert.Contains(t, output, "package mypkg")
+	assert.Contains(t, output, "func MatchEmail(input string) bool")
+	assert.Contains(t, output, "func FindEmailSubmatch(input string) []string")
+}
+
+func TestRunInvalidMatchMode(t *testing.T) {
+	err := run("abc", "pkg", "Match", "", "badmode", false, "FindSubmatch")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid -match mode")
+}
+
 func TestRunExplicitPackageOverridesEnv(t *testing.T) {
 	t.Setenv("GOPACKAGE", "envpkg")
 
 	var runErr error
 	output := captureStdout(t, func() {
-		runErr = run("abc", "explicit", "Match", "")
+		runErr = run("abc", "explicit", "Match", "", "full", false, "FindSubmatch")
 	})
 	require.NoError(t, runErr)
 
