@@ -11,11 +11,25 @@ import (
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
+// MatchMode controls how the generated function matches input.
+type MatchMode int
+
+const (
+	// MatchFull requires the entire input to match (default). Equivalent to ^pattern$.
+	MatchFull MatchMode = iota
+	// MatchPrefix matches if a prefix of the input matches the pattern. Equivalent to ^pattern.
+	MatchPrefix
+	// MatchContains matches if any substring of the input matches. Equivalent to unanchored pattern.
+	MatchContains
+)
+
 // Options controls the generated code.
 type Options struct {
-	PackageName string // Go package name
-	FuncName    string // Name of the generated match function
-	Regex       string // Original regex (for comment)
+	PackageName string    // Go package name
+	FuncName    string    // Name of the generated match function
+	Regex       string    // Original regex (for comment)
+	Mode        MatchMode // Match mode (default: MatchFull)
+	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
 }
 
 // Generate writes Go source code implementing a DFA matcher to w.
@@ -34,6 +48,11 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 
 	writeMatchFunc(&buf, d, opts, ascii)
 
+	if opts.Submatch != nil {
+		fmt.Fprintf(&buf, "\n")
+		GenerateSubmatch(&buf, *opts.Submatch)
+	}
+
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
 		// If formatting fails, write unformatted so user can debug
@@ -48,9 +67,20 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	return err
 }
 
+func matchModeComment(mode MatchMode) string {
+	switch mode {
+	case MatchPrefix:
+		return "reports whether a prefix of input matches"
+	case MatchContains:
+		return "reports whether any substring of input matches"
+	default:
+		return "reports whether input fully matches"
+	}
+}
+
 func writeMatchFunc(buf *bytes.Buffer, d *dfa.DFA, opts Options, ascii bool) {
-	fmt.Fprintf(buf, "// %s reports whether input fully matches the regex %s.\n",
-		opts.FuncName, quoteRegex(opts.Regex))
+	fmt.Fprintf(buf, "// %s %s the regex %s.\n",
+		opts.FuncName, matchModeComment(opts.Mode), quoteRegex(opts.Regex))
 	fmt.Fprintf(buf, "func %s(input string) bool {\n", opts.FuncName)
 
 	// Handle edge case: no states or no accepting states
@@ -66,23 +96,49 @@ func writeMatchFunc(buf *bytes.Buffer, d *dfa.DFA, opts Options, ascii bool) {
 	// If the DFA has only one state that is accepting with no transitions,
 	// the regex matches only the empty string.
 	if len(d.States) == 1 && startAccepts && len(d.States[0].Transitions) == 0 {
-		fmt.Fprintf(buf, "\treturn len(input) == 0\n")
+		if opts.Mode == MatchContains || opts.Mode == MatchPrefix {
+			fmt.Fprintf(buf, "\treturn true\n")
+		} else {
+			fmt.Fprintf(buf, "\treturn len(input) == 0\n")
+		}
 		fmt.Fprintf(buf, "}\n")
 		return
 	}
 
-	fmt.Fprintf(buf, "\tstate := %d\n", d.Start)
-
-	if ascii {
-		writeASCIILoop(buf, d)
-	} else {
-		writeUTF8Loop(buf, d)
+	switch opts.Mode {
+	case MatchPrefix:
+		writeMatchPrefixBody(buf, d, ascii)
+	case MatchContains:
+		writeMatchContainsBody(buf, d, ascii)
+	default:
+		fmt.Fprintf(buf, "\tstate := %d\n", d.Start)
+		if ascii {
+			writeASCIILoop(buf, d)
+		} else {
+			writeUTF8Loop(buf, d)
+		}
+		writeAcceptCheck(buf, d)
 	}
 
-	// Write accepting state check
-	writeAcceptCheck(buf, d)
-
 	fmt.Fprintf(buf, "}\n")
+}
+
+func writeMatchPrefixBody(buf *bytes.Buffer, d *dfa.DFA, ascii bool) {
+	fmt.Fprintf(buf, "\tstate := %d\n", d.Start)
+	if ascii {
+		writeASCIILoopPrefix(buf, d)
+	} else {
+		writeUTF8LoopPrefix(buf, d)
+	}
+	writeAcceptCheck(buf, d)
+}
+
+func writeMatchContainsBody(buf *bytes.Buffer, d *dfa.DFA, ascii bool) {
+	if ascii {
+		writeASCIIContains(buf, d)
+	} else {
+		writeUTF8Contains(buf, d)
+	}
 }
 
 func writeASCIILoop(buf *bytes.Buffer, d *dfa.DFA) {
@@ -139,6 +195,231 @@ func writeUTF8Loop(buf *bytes.Buffer, d *dfa.DFA) {
 	fmt.Fprintf(buf, "\t\t}\n")
 	fmt.Fprintf(buf, "\t\ti += size\n")
 	fmt.Fprintf(buf, "\t}\n")
+}
+
+// writeASCIILoopPrefix generates an ASCII loop that breaks (instead of returning false)
+// when no transition matches, allowing prefix matching.
+func writeASCIILoopPrefix(buf *bytes.Buffer, d *dfa.DFA) {
+	fmt.Fprintf(buf, "\tfor i := 0; i < len(input); i++ {\n")
+	fmt.Fprintf(buf, "\t\tc := input[i]\n")
+	fmt.Fprintf(buf, "\t\tswitch state {\n")
+
+	for _, state := range d.States {
+		if len(state.Transitions) == 0 && !state.Accept {
+			continue
+		}
+		fmt.Fprintf(buf, "\t\tcase %d:\n", state.ID)
+		fmt.Fprintf(buf, "\t\t\tswitch {\n")
+		for _, tr := range state.Transitions {
+			writeByteCondition(buf, tr)
+			fmt.Fprintf(buf, "\t\t\t\tstate = %d\n", tr.Next)
+		}
+		fmt.Fprintf(buf, "\t\t\tdefault:\n")
+		fmt.Fprintf(buf, "\t\t\t\tgoto done\n")
+		fmt.Fprintf(buf, "\t\t\t}\n")
+	}
+
+	fmt.Fprintf(buf, "\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\tgoto done\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t}\n")
+	fmt.Fprintf(buf, "done:\n")
+}
+
+// writeUTF8LoopPrefix generates a UTF-8 loop with prefix matching semantics.
+func writeUTF8LoopPrefix(buf *bytes.Buffer, d *dfa.DFA) {
+	fmt.Fprintf(buf, "\tfor i := 0; i < len(input); {\n")
+	fmt.Fprintf(buf, "\t\tr, size := utf8.DecodeRuneInString(input[i:])\n")
+	fmt.Fprintf(buf, "\t\tif r == utf8.RuneError && size == 1 {\n")
+	fmt.Fprintf(buf, "\t\t\tgoto done\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t\tswitch state {\n")
+
+	for _, state := range d.States {
+		if len(state.Transitions) == 0 && !state.Accept {
+			continue
+		}
+		fmt.Fprintf(buf, "\t\tcase %d:\n", state.ID)
+		fmt.Fprintf(buf, "\t\t\tswitch {\n")
+		for _, tr := range state.Transitions {
+			writeRuneCondition(buf, tr)
+			fmt.Fprintf(buf, "\t\t\t\tstate = %d\n", tr.Next)
+		}
+		fmt.Fprintf(buf, "\t\t\tdefault:\n")
+		fmt.Fprintf(buf, "\t\t\t\tgoto done\n")
+		fmt.Fprintf(buf, "\t\t\t}\n")
+	}
+
+	fmt.Fprintf(buf, "\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\tgoto done\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t\ti += size\n")
+	fmt.Fprintf(buf, "\t}\n")
+	fmt.Fprintf(buf, "done:\n")
+}
+
+// writeASCIIContains generates an ASCII loop that tries matching from each position.
+func writeASCIIContains(buf *bytes.Buffer, d *dfa.DFA) {
+	fmt.Fprintf(buf, "\tfor start := 0; start <= len(input); start++ {\n")
+	fmt.Fprintf(buf, "\t\tstate := %d\n", d.Start)
+
+	// Check if start state accepts (empty pattern match at any position)
+	if d.States[d.Start].Accept {
+		fmt.Fprintf(buf, "\t\treturn true\n")
+		fmt.Fprintf(buf, "\t}\n")
+		return
+	}
+
+	fmt.Fprintf(buf, "\t\tmatched := false\n")
+	fmt.Fprintf(buf, "\t\tfor i := start; i < len(input); i++ {\n")
+	fmt.Fprintf(buf, "\t\t\tc := input[i]\n")
+	fmt.Fprintf(buf, "\t\t\tdead := false\n")
+	fmt.Fprintf(buf, "\t\t\tswitch state {\n")
+
+	for _, state := range d.States {
+		if len(state.Transitions) == 0 && !state.Accept {
+			continue
+		}
+		fmt.Fprintf(buf, "\t\t\tcase %d:\n", state.ID)
+		fmt.Fprintf(buf, "\t\t\t\tswitch {\n")
+		for _, tr := range state.Transitions {
+			writeByteConditionIndented(buf, tr, "\t\t\t\t")
+			fmt.Fprintf(buf, "\t\t\t\t\tstate = %d\n", tr.Next)
+		}
+		fmt.Fprintf(buf, "\t\t\t\tdefault:\n")
+		fmt.Fprintf(buf, "\t\t\t\t\tdead = true\n")
+		fmt.Fprintf(buf, "\t\t\t\t}\n")
+	}
+
+	fmt.Fprintf(buf, "\t\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\t\tdead = true\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+	fmt.Fprintf(buf, "\t\t\tif dead {\n")
+	fmt.Fprintf(buf, "\t\t\t\tbreak\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+
+	// Check if we reached an accepting state after this character
+	fmt.Fprintf(buf, "\t\t\tswitch state {\n")
+	var acceptIDs []int
+	for _, s := range d.States {
+		if s.Accept {
+			acceptIDs = append(acceptIDs, s.ID)
+		}
+	}
+	if len(acceptIDs) > 0 {
+		fmt.Fprintf(buf, "\t\t\tcase ")
+		for i, id := range acceptIDs {
+			if i > 0 {
+				fmt.Fprintf(buf, ", ")
+			}
+			fmt.Fprintf(buf, "%d", id)
+		}
+		fmt.Fprintf(buf, ":\n")
+		fmt.Fprintf(buf, "\t\t\t\tmatched = true\n")
+	}
+	fmt.Fprintf(buf, "\t\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+
+	fmt.Fprintf(buf, "\t\t}\n") // end inner for
+	fmt.Fprintf(buf, "\t\tif matched {\n")
+	fmt.Fprintf(buf, "\t\t\treturn true\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t}\n") // end outer for
+	fmt.Fprintf(buf, "\treturn false\n")
+}
+
+// writeUTF8Contains generates a UTF-8 loop that tries matching from each position.
+func writeUTF8Contains(buf *bytes.Buffer, d *dfa.DFA) {
+	fmt.Fprintf(buf, "\tfor start := 0; start <= len(input); {\n")
+	fmt.Fprintf(buf, "\t\tstate := %d\n", d.Start)
+
+	if d.States[d.Start].Accept {
+		fmt.Fprintf(buf, "\t\treturn true\n")
+		fmt.Fprintf(buf, "\t}\n")
+		return
+	}
+
+	fmt.Fprintf(buf, "\t\tmatched := false\n")
+	fmt.Fprintf(buf, "\t\tfor i := start; i < len(input); {\n")
+	fmt.Fprintf(buf, "\t\t\tr, size := utf8.DecodeRuneInString(input[i:])\n")
+	fmt.Fprintf(buf, "\t\t\tif r == utf8.RuneError && size == 1 {\n")
+	fmt.Fprintf(buf, "\t\t\t\tbreak\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+	fmt.Fprintf(buf, "\t\t\tdead := false\n")
+	fmt.Fprintf(buf, "\t\t\tswitch state {\n")
+
+	for _, state := range d.States {
+		if len(state.Transitions) == 0 && !state.Accept {
+			continue
+		}
+		fmt.Fprintf(buf, "\t\t\tcase %d:\n", state.ID)
+		fmt.Fprintf(buf, "\t\t\t\tswitch {\n")
+		for _, tr := range state.Transitions {
+			writeRuneConditionIndented(buf, tr, "\t\t\t\t")
+			fmt.Fprintf(buf, "\t\t\t\t\tstate = %d\n", tr.Next)
+		}
+		fmt.Fprintf(buf, "\t\t\t\tdefault:\n")
+		fmt.Fprintf(buf, "\t\t\t\t\tdead = true\n")
+		fmt.Fprintf(buf, "\t\t\t\t}\n")
+	}
+
+	fmt.Fprintf(buf, "\t\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\t\tdead = true\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+	fmt.Fprintf(buf, "\t\t\tif dead {\n")
+	fmt.Fprintf(buf, "\t\t\t\tbreak\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+
+	var acceptIDs []int
+	for _, s := range d.States {
+		if s.Accept {
+			acceptIDs = append(acceptIDs, s.ID)
+		}
+	}
+	fmt.Fprintf(buf, "\t\t\tswitch state {\n")
+	if len(acceptIDs) > 0 {
+		fmt.Fprintf(buf, "\t\t\tcase ")
+		for i, id := range acceptIDs {
+			if i > 0 {
+				fmt.Fprintf(buf, ", ")
+			}
+			fmt.Fprintf(buf, "%d", id)
+		}
+		fmt.Fprintf(buf, ":\n")
+		fmt.Fprintf(buf, "\t\t\t\tmatched = true\n")
+	}
+	fmt.Fprintf(buf, "\t\t\tdefault:\n")
+	fmt.Fprintf(buf, "\t\t\t}\n")
+
+	fmt.Fprintf(buf, "\t\t\ti += size\n")
+	fmt.Fprintf(buf, "\t\t}\n") // end inner for
+	fmt.Fprintf(buf, "\t\tif matched {\n")
+	fmt.Fprintf(buf, "\t\t\treturn true\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t\tif start < len(input) {\n")
+	fmt.Fprintf(buf, "\t\t\t_, size := utf8.DecodeRuneInString(input[start:])\n")
+	fmt.Fprintf(buf, "\t\t\tstart += size\n")
+	fmt.Fprintf(buf, "\t\t} else {\n")
+	fmt.Fprintf(buf, "\t\t\tstart++\n")
+	fmt.Fprintf(buf, "\t\t}\n")
+	fmt.Fprintf(buf, "\t}\n") // end outer for
+	fmt.Fprintf(buf, "\treturn false\n")
+}
+
+func writeByteConditionIndented(buf *bytes.Buffer, tr dfa.Transition, indent string) {
+	if tr.Lo == tr.Hi {
+		fmt.Fprintf(buf, "%scase c == %s:\n", indent, quoteByte(byte(tr.Lo)))
+	} else {
+		fmt.Fprintf(buf, "%scase c >= %s && c <= %s:\n", indent, quoteByte(byte(tr.Lo)), quoteByte(byte(tr.Hi)))
+	}
+}
+
+func writeRuneConditionIndented(buf *bytes.Buffer, tr dfa.Transition, indent string) {
+	if tr.Lo == tr.Hi {
+		fmt.Fprintf(buf, "%scase r == %s:\n", indent, quoteRune(tr.Lo))
+	} else {
+		fmt.Fprintf(buf, "%scase r >= %s && r <= %s:\n", indent, quoteRune(tr.Lo), quoteRune(tr.Hi))
+	}
 }
 
 func writeAcceptCheck(buf *bytes.Buffer, d *dfa.DFA) {
