@@ -131,3 +131,202 @@ func TestGeneratePackageName(t *testing.T) {
 		})
 	}
 }
+
+func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) string {
+	t.Helper()
+	d := buildDFA(t, pattern)
+	var buf bytes.Buffer
+	opts := Options{
+		PackageName: "testpkg",
+		FuncName:    funcName,
+		Regex:       pattern,
+		Mode:        mode,
+	}
+	err := Generate(&buf, d, opts)
+	require.NoError(t, err)
+	return buf.String()
+}
+
+func assertValidGo(t *testing.T, code string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, "generated.go", code, 0)
+	assert.NoError(t, err, "generated code should be valid Go:\n%s", code)
+}
+
+func TestGeneratePrefixMode(t *testing.T) {
+	patterns := []string{"abc", "[a-z]+", `\d{3}-\d{2}`, "a+b", ""}
+	for _, p := range patterns {
+		t.Run(p, func(t *testing.T) {
+			output := generateWithMode(t, p, "MatchPrefix", MatchPrefix)
+			assertValidGo(t, output)
+			assert.Contains(t, output, "func MatchPrefix(input string) bool")
+			assert.Contains(t, output, "reports whether a prefix of input matches")
+		})
+	}
+}
+
+func TestGenerateContainsMode(t *testing.T) {
+	patterns := []string{"abc", "[a-z]+", `\d{3}`, "error", ""}
+	for _, p := range patterns {
+		t.Run(p, func(t *testing.T) {
+			output := generateWithMode(t, p, "MatchContains", MatchContains)
+			assertValidGo(t, output)
+			assert.Contains(t, output, "func MatchContains(input string) bool")
+			assert.Contains(t, output, "reports whether any substring of input matches")
+		})
+	}
+}
+
+func TestGeneratePrefixModeUnicode(t *testing.T) {
+	output := generateWithMode(t, `[\x{00C0}-\x{00FF}]+`, "MatchPrefix", MatchPrefix)
+	assertValidGo(t, output)
+	assert.Contains(t, output, "utf8.DecodeRuneInString")
+	assert.Contains(t, output, "goto done")
+}
+
+func TestGenerateContainsModeUnicode(t *testing.T) {
+	output := generateWithMode(t, `[\x{00C0}-\x{00FF}]+`, "MatchContains", MatchContains)
+	assertValidGo(t, output)
+	assert.Contains(t, output, "utf8.DecodeRuneInString")
+}
+
+func TestGenerateSubmatch(t *testing.T) {
+	patterns := []struct {
+		name    string
+		pattern string
+	}{
+		{"simple_groups", `([a-z]+)@([a-z]+)`},
+		{"ssn", `(\d{3})-(\d{2})-(\d{4})`},
+		{"alternation", `(foo|bar)baz`},
+		{"repeated_group", `([a-z]+)(\.[a-z]+)*`},
+		{"single_group", `(a+)(b+)`},
+	}
+
+	for _, tt := range patterns {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := syntax.Parse(tt.pattern, syntax.Perl)
+			require.NoError(t, err)
+			re = re.Simplify()
+			prog, err := syntax.Compile(re)
+			require.NoError(t, err)
+			d, err := dfa.Build(prog)
+			require.NoError(t, err)
+
+			numGroups := countGroups(re)
+
+			var buf bytes.Buffer
+			opts := Options{
+				PackageName: "testpkg",
+				FuncName:    "Match",
+				Regex:       tt.pattern,
+				Submatch: &SubmatchOptions{
+					FuncName:  "FindSubmatch",
+					MatchFunc: "Match",
+					Regex:     tt.pattern,
+					Prog:      prog,
+					NumGroups: numGroups,
+				},
+			}
+			err = Generate(&buf, d, opts)
+			require.NoError(t, err)
+
+			output := buf.String()
+			assertValidGo(t, output)
+			assert.Contains(t, output, "func FindSubmatch(input string) []string")
+			assert.Contains(t, output, "opRune")
+			assert.Contains(t, output, "nfaInst")
+			assert.Contains(t, output, "addThread")
+			assert.Contains(t, output, "runeMatch")
+		})
+	}
+}
+
+// countGroups counts capture groups in a parsed regex.
+func countGroups(re *syntax.Regexp) int {
+	n := 0
+	if re.Op == syntax.OpCapture {
+		n = 1
+	}
+	for _, sub := range re.Sub {
+		n += countGroups(sub)
+	}
+	return n
+}
+
+func TestInstOpName(t *testing.T) {
+	tests := []struct {
+		op   syntax.InstOp
+		want string
+	}{
+		{syntax.InstRune, "opRune"},
+		{syntax.InstRune1, "opRune1"},
+		{syntax.InstRuneAny, "opRuneAny"},
+		{syntax.InstRuneAnyNotNL, "opRuneAnyNL"},
+		{syntax.InstAlt, "opAlt"},
+		{syntax.InstAltMatch, "opAlt"},
+		{syntax.InstCapture, "opCapture"},
+		{syntax.InstMatch, "opMatch"},
+		{syntax.InstNop, "opNop"},
+		{syntax.InstFail, "opFail"},
+		{syntax.InstEmptyWidth, "opEmpty"},
+		{syntax.InstOp(255), "255"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, instOpName(tt.op))
+	}
+}
+
+func TestFormatRunes(t *testing.T) {
+	assert.Equal(t, "[]rune{97}", formatRunes([]rune{'a'}))
+	assert.Equal(t, "[]rune{97, 122}", formatRunes([]rune{'a', 'z'}))
+	assert.Equal(t, "[]rune{48, 57, 65, 90}", formatRunes([]rune{'0', '9', 'A', 'Z'}))
+}
+
+func TestBuildSubmatchContext(t *testing.T) {
+	re, err := syntax.Parse(`([a-z]+)@([a-z]+)`, syntax.Perl)
+	require.NoError(t, err)
+	re = re.Simplify()
+	prog, err := syntax.Compile(re)
+	require.NoError(t, err)
+
+	ctx := buildSubmatchContext(SubmatchOptions{
+		FuncName:  "FindSubmatch",
+		MatchFunc: "Match",
+		Regex:     `([a-z]+)@([a-z]+)`,
+		Prog:      prog,
+		NumGroups: 2,
+	})
+
+	assert.Equal(t, "FindSubmatch", ctx.FuncName)
+	assert.Equal(t, "Match", ctx.MatchFunc)
+	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
+	assert.Equal(t, 3, ctx.NumGroups) // 6/2
+	assert.Equal(t, prog.Start, ctx.StartPC)
+	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
+
+	// Verify at least one instruction has runes
+	hasRunes := false
+	for _, inst := range ctx.Instructions {
+		if inst.Runes != "" {
+			hasRunes = true
+			break
+		}
+	}
+	assert.True(t, hasRunes, "expected at least one instruction with runes")
+}
+
+func TestGenerateEmptyStates(t *testing.T) {
+	// DFA with no states at all
+	d := &dfa.DFA{States: nil, Start: 0}
+	var buf bytes.Buffer
+	err := Generate(&buf, d, Options{
+		PackageName: "testpkg",
+		FuncName:    "Match",
+		Regex:       "impossible",
+	})
+	require.NoError(t, err)
+	output := buf.String()
+	assertValidGo(t, output)
+	assert.Contains(t, output, "return false")
+}
