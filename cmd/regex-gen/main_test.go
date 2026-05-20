@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -89,8 +89,8 @@ func TestRunInvalidOutputPath(t *testing.T) {
 
 func TestRunComplexPatterns(t *testing.T) {
 	patterns := []struct {
-		name    string
-		pattern string
+		name	string
+		pattern	string
 	}{
 		{"email", `[a-z]+@[a-z]+\.[a-z]{2,}`},
 		{"ssn", `\d{3}-\d{2}-\d{4}`},

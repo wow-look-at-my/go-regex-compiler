@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
@@ -30,9 +30,9 @@ func generateCode(t *testing.T, pattern, pkg, funcName string) string {
 	d := buildDFA(t, pattern)
 	var buf bytes.Buffer
 	opts := Options{
-		PackageName: pkg,
-		FuncName:    funcName,
-		Regex:       pattern,
+		PackageName:	pkg,
+		FuncName:	funcName,
+		Regex:		pattern,
 	}
 	err := Generate(&buf, d, opts)
 	require.NoError(t, err)
@@ -107,8 +107,8 @@ func TestIsASCIIOnly(t *testing.T) {
 
 func TestGenerateFuncName(t *testing.T) {
 	tests := []struct {
-		funcName string
-		pattern  string
+		funcName	string
+		pattern		string
 	}{
 		{"MatchEmail", `[a-z]+@[a-z]+\.[a-z]+`},
 		{"IsValid", `[0-9]+`},
@@ -137,10 +137,10 @@ func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) st
 	d := buildDFA(t, pattern)
 	var buf bytes.Buffer
 	opts := Options{
-		PackageName: "testpkg",
-		FuncName:    funcName,
-		Regex:       pattern,
-		Mode:        mode,
+		PackageName:	"testpkg",
+		FuncName:	funcName,
+		Regex:		pattern,
+		Mode:		mode,
 	}
 	err := Generate(&buf, d, opts)
 	require.NoError(t, err)
@@ -193,8 +193,8 @@ func TestGenerateContainsModeUnicode(t *testing.T) {
 
 func TestGenerateSubmatch(t *testing.T) {
 	patterns := []struct {
-		name    string
-		pattern string
+		name	string
+		pattern	string
 	}{
 		{"simple_groups", `([a-z]+)@([a-z]+)`},
 		{"ssn", `(\d{3})-(\d{2})-(\d{4})`},
@@ -217,15 +217,15 @@ func TestGenerateSubmatch(t *testing.T) {
 
 			var buf bytes.Buffer
 			opts := Options{
-				PackageName: "testpkg",
-				FuncName:    "Match",
-				Regex:       tt.pattern,
+				PackageName:	"testpkg",
+				FuncName:	"Match",
+				Regex:		tt.pattern,
 				Submatch: &SubmatchOptions{
-					FuncName:  "FindSubmatch",
-					MatchFunc: "Match",
-					Regex:     tt.pattern,
-					Prog:      prog,
-					NumGroups: numGroups,
+					FuncName:	"FindSubmatch",
+					MatchFunc:	"Match",
+					Regex:		tt.pattern,
+					Prog:		prog,
+					NumGroups:	numGroups,
 				},
 			}
 			err = Generate(&buf, d, opts)
@@ -256,8 +256,8 @@ func countGroups(re *syntax.Regexp) int {
 
 func TestInstOpName(t *testing.T) {
 	tests := []struct {
-		op   syntax.InstOp
-		want string
+		op	syntax.InstOp
+		want	string
 	}{
 		{syntax.InstRune, "opRune"},
 		{syntax.InstRune1, "opRune1"},
@@ -291,17 +291,17 @@ func TestBuildSubmatchContext(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := buildSubmatchContext(SubmatchOptions{
-		FuncName:  "FindSubmatch",
-		MatchFunc: "Match",
-		Regex:     `([a-z]+)@([a-z]+)`,
-		Prog:      prog,
-		NumGroups: 2,
+		FuncName:	"FindSubmatch",
+		MatchFunc:	"Match",
+		Regex:		`([a-z]+)@([a-z]+)`,
+		Prog:		prog,
+		NumGroups:	2,
 	})
 
 	assert.Equal(t, "FindSubmatch", ctx.FuncName)
 	assert.Equal(t, "Match", ctx.MatchFunc)
-	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
-	assert.Equal(t, 3, ctx.NumGroups) // 6/2
+	assert.Equal(t, 6, ctx.NumSlots)	// (2+1)*2
+	assert.Equal(t, 3, ctx.NumGroups)	// 6/2
 	assert.Equal(t, prog.Start, ctx.StartPC)
 	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 
@@ -321,9 +321,9 @@ func TestGenerateEmptyStates(t *testing.T) {
 	d := &dfa.DFA{States: nil, Start: 0}
 	var buf bytes.Buffer
 	err := Generate(&buf, d, Options{
-		PackageName: "testpkg",
-		FuncName:    "Match",
-		Regex:       "impossible",
+		PackageName:	"testpkg",
+		FuncName:	"Match",
+		Regex:		"impossible",
 	})
 	require.NoError(t, err)
 	output := buf.String()

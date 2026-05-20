@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
@@ -19,8 +19,8 @@ import (
 
 // testPatterns are the regex patterns used across correctness, benchmark, and size tests.
 var testPatterns = []struct {
-	name    string
-	pattern string
+	name	string
+	pattern	string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},
@@ -76,9 +76,9 @@ func generate(t *testing.T, pattern string) []byte {
 	require.NoError(t, err)
 	var buf bytes.Buffer
 	opts := codegen.Options{
-		PackageName: "main",
-		FuncName:    "Match",
-		Regex:       pattern,
+		PackageName:	"main",
+		FuncName:	"Match",
+		Regex:		pattern,
 	}
 	require.NoError(t, codegen.Generate(&buf, d, opts))
 	return buf.Bytes()
@@ -94,6 +94,7 @@ func anchoredRegexp(pattern string) *regexp.Regexp {
 func TestCorrectnessVsRegexp(t *testing.T) {
 	for _, tp := range testPatterns {
 		t.Run(tp.name, func(t *testing.T) {
+			t.Parallel()
 			src := generate(t, tp.pattern)
 			re := anchoredRegexp(tp.pattern)
 
@@ -153,6 +154,7 @@ func TestBenchmarkVsRegexp(t *testing.T) {
 
 	for _, tp := range testPatterns {
 		t.Run(tp.name, func(t *testing.T) {
+			t.Parallel()
 			src := generate(t, tp.pattern)
 			tmpDir := t.TempDir()
 
