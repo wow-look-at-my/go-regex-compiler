@@ -5,13 +5,13 @@ A Go code generator that compiles regular expressions into pure Go functions. In
 ## Install
 
 ```bash
-go install github.com/wow-look-at-my/go-regex-compiler/cmd/regex-gen@latest
+go install github.com/wow-look-at-my/go-regex-compiler/cmd/go-regex-compiler@latest
 ```
 
 ## Usage
 
 ```bash
-regex-gen -regex 'pattern' [flags]
+go-regex-compiler -regex 'pattern' [flags]
 ```
 
 ### Flags
@@ -37,20 +37,20 @@ regex-gen -regex 'pattern' [flags]
 Generate a function that matches email-like patterns:
 
 ```bash
-regex-gen -regex '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
+go-regex-compiler -regex '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
   -func IsEmail -package validators -output email.go
 ```
 
 Use with `go generate`:
 
 ```go
-//go:generate regex-gen -regex "^[0-9]{3}-[0-9]{4}$" -func MatchPhone -output phone_match.go
+//go:generate go-regex-compiler -regex "^[0-9]{3}-[0-9]{4}$" -func MatchPhone -output phone_match.go
 ```
 
 Generate with capture group extraction:
 
 ```bash
-regex-gen -regex '([0-9]{4})-([0-9]{2})-([0-9]{2})' \
+go-regex-compiler -regex '([0-9]{4})-([0-9]{2})-([0-9]{2})' \
   -func MatchDate -submatch -submatch-func ExtractDate \
   -package main -output date.go
 ```
