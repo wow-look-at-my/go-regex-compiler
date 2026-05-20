@@ -5,11 +5,12 @@ import "text/template"
 var tmpl = template.Must(template.New("").Funcs(funcMap).Parse(allTemplates))
 
 var funcMap = template.FuncMap{
-	"quoteByte":  quoteByte,
-	"quoteRune":  quoteRune,
-	"quoteRegex": quoteRegex,
-	"isLive":     func(s templateState) bool { return len(s.Transitions) > 0 || s.Accept },
-	"args":       func(args ...any) []any { return args },
+	"quoteRegex":      quoteRegex,
+	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 || s.Accept },
+	"args":            func(args ...any) []any { return args },
+	"stateTransition": stateTransition,
+	"byteCond":        byteCond,
+	"runeCond":        runeCond,
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
 		for i := range indices {
@@ -36,8 +37,6 @@ const allTemplates = headerTemplate +
 	statesRuneTemplate +
 	statesASCIIContainsTemplate +
 	statesRuneContainsTemplate +
-	byteConditionTemplate +
-	runeConditionTemplate +
 	acceptCheckTemplate +
 	acceptIDsTemplate +
 	submatchFuncTemplate +
@@ -303,16 +302,8 @@ const statesASCIITemplate = `
 		case {{ .ID }}:
 			switch {
 {{- range .Transitions }}
-			{{ template "byteCondition" . }}
-{{- if $s.IsChain }}
-				if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
-					state = {{ $s.ChainTerminal }}
-				} else {
-					chainCount{{ $s.ChainIndex }}++
-				}
-{{- else }}
-				state = {{ .Next }}
-{{- end }}
+			{{ byteCond . }}
+				{{ stateTransition $s . }}
 {{- end }}
 			default:
 				{{ $noMatch }}
@@ -332,16 +323,8 @@ const statesRuneTemplate = `
 		case {{ .ID }}:
 			switch {
 {{- range .Transitions }}
-			{{ template "runeCondition" . }}
-{{- if $s.IsChain }}
-				if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
-					state = {{ $s.ChainTerminal }}
-				} else {
-					chainCount{{ $s.ChainIndex }}++
-				}
-{{- else }}
-				state = {{ .Next }}
-{{- end }}
+			{{ runeCond . }}
+				{{ stateTransition $s . }}
 {{- end }}
 			default:
 				{{ $noMatch }}
@@ -357,16 +340,8 @@ const statesASCIIContainsTemplate = `
 			case {{ .ID }}:
 				switch {
 {{- range .Transitions }}
-				{{ template "byteCondition" . }}
-{{- if $s.IsChain }}
-					if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
-						state = {{ $s.ChainTerminal }}
-					} else {
-						chainCount{{ $s.ChainIndex }}++
-					}
-{{- else }}
-					state = {{ .Next }}
-{{- end }}
+				{{ byteCond . }}
+					{{ stateTransition $s . }}
 {{- end }}
 				default:
 					dead = true
@@ -382,43 +357,13 @@ const statesRuneContainsTemplate = `
 			case {{ .ID }}:
 				switch {
 {{- range .Transitions }}
-				{{ template "runeCondition" . }}
-{{- if $s.IsChain }}
-					if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
-						state = {{ $s.ChainTerminal }}
-					} else {
-						chainCount{{ $s.ChainIndex }}++
-					}
-{{- else }}
-					state = {{ .Next }}
-{{- end }}
+				{{ runeCond . }}
+					{{ stateTransition $s . }}
 {{- end }}
 				default:
 					dead = true
 				}
 {{- end }}{{ end }}
-{{- end -}}
-`
-
-// ---------- conditions ----------
-
-const byteConditionTemplate = `
-{{- define "byteCondition" -}}
-{{- if eq .Lo .Hi -}}
-case c == {{ quoteByte .Lo }}:
-{{- else -}}
-case c >= {{ quoteByte .Lo }} && c <= {{ quoteByte .Hi }}:
-{{- end -}}
-{{- end -}}
-`
-
-const runeConditionTemplate = `
-{{- define "runeCondition" -}}
-{{- if eq .Lo .Hi -}}
-case r == {{ quoteRune .Lo }}:
-{{- else -}}
-case r >= {{ quoteRune .Lo }} && r <= {{ quoteRune .Hi }}:
-{{- end -}}
 {{- end -}}
 `
 

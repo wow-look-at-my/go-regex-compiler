@@ -328,6 +328,28 @@ func quoteRegex(s string) string {
 	return "`" + s + "`"
 }
 
+func stateTransition(s templateState, t templateTransition) string {
+	if s.IsChain {
+		return fmt.Sprintf("if chainCount%d >= %d {\nstate = %d\n} else {\nchainCount%d++\n}",
+			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
+	}
+	return fmt.Sprintf("state = %d", t.Next)
+}
+
+func byteCond(t templateTransition) string {
+	if t.Lo == t.Hi {
+		return fmt.Sprintf("case c == %s:", quoteByte(t.Lo))
+	}
+	return fmt.Sprintf("case c >= %s && c <= %s:", quoteByte(t.Lo), quoteByte(t.Hi))
+}
+
+func runeCond(t templateTransition) string {
+	if t.Lo == t.Hi {
+		return fmt.Sprintf("case r == %s:", quoteRune(t.Lo))
+	}
+	return fmt.Sprintf("case r >= %s && r <= %s:", quoteRune(t.Lo), quoteRune(t.Hi))
+}
+
 // isASCIIOnly returns true if all DFA transitions only involve runes <= 127.
 func isASCIIOnly(d *dfa.DFA) bool {
 	for _, state := range d.States {
