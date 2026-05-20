@@ -1,12 +1,8 @@
-package e2e_test
+package e2e
 
 import (
-	"bytes"
-	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 )
 
 type testCase struct {
@@ -16,11 +12,12 @@ type testCase struct {
 
 func TestIntegration(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			regex: "abc",
+			name: "abc", matchFn: MatchLiteral,
 			cases: []testCase{
 				{"abc", true},
 				{"", false},
@@ -31,7 +28,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "[a-z]+",
+			name: "[a-z]+", matchFn: MatchCharClass,
 			cases: []testCase{
 				{"hello", true},
 				{"a", true},
@@ -43,7 +40,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a*",
+			name: "a*", matchFn: MatchAStar,
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -53,7 +50,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a+",
+			name: "a+", matchFn: MatchAPlus,
 			cases: []testCase{
 				{"a", true},
 				{"aaa", true},
@@ -63,7 +60,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a?",
+			name: "a?", matchFn: MatchAQuestion,
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -72,7 +69,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a|b",
+			name: "a|b", matchFn: MatchAOrB,
 			cases: []testCase{
 				{"a", true},
 				{"b", true},
@@ -82,7 +79,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(a|b)*c",
+			name: "(a|b)*c", matchFn: MatchAltStarC,
 			cases: []testCase{
 				{"c", true},
 				{"ac", true},
@@ -96,7 +93,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}-\d{4}`,
+			name: `\d{3}-\d{2}-\d{4}`, matchFn: MatchSSN,
 			cases: []testCase{
 				{"123-45-6789", true},
 				{"000-00-0000", true},
@@ -107,7 +104,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `[A-Za-z_][A-Za-z0-9_]*`,
+			name: `[A-Za-z_][A-Za-z0-9_]*`, matchFn: MatchIdentifier,
 			cases: []testCase{
 				{"x", true},
 				{"_", true},
@@ -122,7 +119,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `[0-9]+\.[0-9]+`,
+			name: `[0-9]+\.[0-9]+`, matchFn: MatchDottedNumber,
 			cases: []testCase{
 				{"1.0", true},
 				{"123.456", true},
@@ -134,7 +131,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(foo|bar)baz",
+			name: "(foo|bar)baz", matchFn: MatchFooBarBaz,
 			cases: []testCase{
 				{"foobaz", true},
 				{"barbaz", true},
@@ -144,7 +141,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `(https?://)?[a-z]+\.[a-z]{2,}`,
+			name: `(https?://)?[a-z]+\.[a-z]{2,}`, matchFn: MatchURL,
 			cases: []testCase{
 				{"example.com", true},
 				{"http://example.com", true},
@@ -156,14 +153,14 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "",
+			name: "empty", matchFn: MatchEmpty,
 			cases: []testCase{
 				{"", true},
 				{"a", false},
 			},
 		},
 		{
-			regex: ".",
+			name: ".", matchFn: MatchDot,
 			cases: []testCase{
 				{"a", true},
 				{"1", true},
@@ -174,7 +171,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(?i)abc",
+			name: "(?i)abc", matchFn: MatchCaseIAbc,
 			cases: []testCase{
 				{"abc", true},
 				{"ABC", true},
@@ -187,7 +184,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\w+`,
+			name: `\w+`, matchFn: MatchWordChars,
 			cases: []testCase{
 				{"hello", true},
 				{"Hello123", true},
@@ -199,7 +196,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\s+`,
+			name: `\s+`, matchFn: MatchWhitespace,
 			cases: []testCase{
 				{" ", true},
 				{"\t", true},
@@ -210,7 +207,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `[a-z0-9][a-z0-9._-]{0,127}`,
+			name: `[a-z0-9][a-z0-9._-]{0,127}`, matchFn: MatchContainer,
 			cases: []testCase{
 				{"a", true},
 				{"abc", true},
@@ -233,76 +230,94 @@ func TestIntegration(t *testing.T) {
 		},
 	}
 
-	runBatchedMatchTest(t, tests, codegen.MatchFull)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				if got := tt.matchFn(tc.input); got != tc.match {
+					t.Errorf("%s(%q) = %v, want %v", tt.name, tc.input, got, tc.match)
+				}
+			}
+		})
+	}
 }
 
 func TestIntegrationPrefix(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			regex: "[a-z]+",
+			name: "[a-z]+", matchFn: MatchPrefixCharClass,
 			cases: []testCase{
 				{"hello", true},
-				{"hello123", true},
+				{"hello123", true},  // prefix "hello" matches
 				{"hello world", true},
 				{"", false},
 				{"123", false},
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}`,
+			name: `\d{3}-\d{2}`, matchFn: MatchPrefixDigitDash,
 			cases: []testCase{
 				{"123-45", true},
-				{"123-45-6789", true},
+				{"123-45-6789", true}, // prefix matches
 				{"12-45", false},
 				{"abc", false},
 			},
 		},
 		{
-			regex: "a+b",
+			name: "a+b", matchFn: MatchPrefixAPlusB,
 			cases: []testCase{
 				{"ab", true},
 				{"aab", true},
-				{"aabcdef", true},
-				{"a", false},
+				{"aabcdef", true}, // prefix "aab" matches
+				{"a", false},      // no prefix matches (b required)
 				{"aaac", false},
 				{"", false},
 			},
 		},
 	}
 
-	runBatchedMatchTest(t, tests, codegen.MatchPrefix)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				if got := tt.matchFn(tc.input); got != tc.match {
+					t.Errorf("%s(%q) = %v, want %v", tt.name, tc.input, got, tc.match)
+				}
+			}
+		})
+	}
 }
 
 func TestIntegrationContains(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			regex: "[a-z]+",
+			name: "[a-z]+", matchFn: MatchContainsCharClass,
 			cases: []testCase{
 				{"hello", true},
-				{"123hello456", true},
-				{"HELLO", false},
+				{"123hello456", true}, // substring matches
+				{"HELLO", false},      // no lowercase substring
 				{"123", false},
 				{"", false},
 				{"test@example.com", true},
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}-\d{4}`,
+			name: `\d{3}-\d{2}-\d{4}`, matchFn: MatchContainsSSN,
 			cases: []testCase{
 				{"123-45-6789", true},
-				{"SSN: 123-45-6789!", true},
+				{"SSN: 123-45-6789!", true}, // contained
 				{"abc", false},
 				{"123-45", false},
 			},
 		},
 		{
-			regex: "error",
+			name: "error", matchFn: MatchContainsError,
 			cases: []testCase{
 				{"error", true},
 				{"an error occurred", true},
@@ -312,54 +327,30 @@ func TestIntegrationContains(t *testing.T) {
 		},
 	}
 
-	runBatchedMatchTest(t, tests, codegen.MatchContains)
-}
-
-// runBatchedMatchTest generates all matchers, compiles them in a single binary, and runs assertions.
-func runBatchedMatchTest(t *testing.T, tests []struct {
-	regex string
-	cases []testCase
-}, mode codegen.MatchMode) {
-	t.Helper()
-
-	tmpDir := t.TempDir()
-
-	funcNames := make([]string, len(tests))
-	for i, tt := range tests {
-		funcNames[i] = fmt.Sprintf("Match%d", i)
-		src := generateNamed(t, tt.regex, funcNames[i], mode)
-		writeGenerated(t, tmpDir, fmt.Sprintf("match_%d.go", i), src)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				if got := tt.matchFn(tc.input); got != tc.match {
+					t.Errorf("%s(%q) = %v, want %v", tt.name, tc.input, got, tc.match)
+				}
+			}
+		})
 	}
-
-	var harness bytes.Buffer
-	harness.WriteString("package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() {\n\tfailed := false\n")
-
-	for i, tt := range tests {
-		for j, tc := range tt.cases {
-			fmt.Fprintf(&harness, "\tif %s(%q) != %v {\n", funcNames[i], tc.input, tc.match)
-			fmt.Fprintf(&harness, "\t\tfmt.Fprintln(os.Stderr, %q)\n",
-				fmt.Sprintf("FAIL [%s] case %d: %s(%q) expected %v", tt.regex, j, funcNames[i], tc.input, tc.match))
-			harness.WriteString("\t\tfailed = true\n\t}\n")
-		}
-	}
-
-	harness.WriteString("\tif failed {\n\t\tos.Exit(1)\n\t}\n\tfmt.Println(\"PASS\")\n}\n")
-	writeGenerated(t, tmpDir, "main.go", harness.Bytes())
-	modInitAndRun(t, tmpDir)
 }
 
 type submatchCase struct {
 	input  string
-	groups []string
+	groups []string // nil means no match, else groups[0]=full match, groups[1..]=captures
 }
 
 func TestIntegrationSubmatch(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []submatchCase
+		name    string
+		findFn  func(string) []string
+		cases   []submatchCase
 	}{
 		{
-			regex: `([a-z]+)@([a-z]+)`,
+			name: `([a-z]+)@([a-z]+)`, findFn: FindSubEmail,
 			cases: []submatchCase{
 				{"user@host", []string{"user@host", "user", "host"}},
 				{"abc@xyz", []string{"abc@xyz", "abc", "xyz"}},
@@ -368,7 +359,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(\d{3})-(\d{2})-(\d{4})`,
+			name: `(\d{3})-(\d{2})-(\d{4})`, findFn: FindSubSSN,
 			cases: []submatchCase{
 				{"123-45-6789", []string{"123-45-6789", "123", "45", "6789"}},
 				{"000-00-0000", []string{"000-00-0000", "000", "00", "0000"}},
@@ -376,7 +367,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(a+)(b+)`,
+			name: `(a+)(b+)`, findFn: FindSubAB,
 			cases: []submatchCase{
 				{"ab", []string{"ab", "a", "b"}},
 				{"aaabbb", []string{"aaabbb", "aaa", "bbb"}},
@@ -385,7 +376,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(foo|bar)baz`,
+			name: `(foo|bar)baz`, findFn: FindSubFooBarBaz,
 			cases: []submatchCase{
 				{"foobaz", []string{"foobaz", "foo"}},
 				{"barbaz", []string{"barbaz", "bar"}},
@@ -393,7 +384,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `([a-z]+)(\.[a-z]+)*`,
+			name: `([a-z]+)(\.[a-z]+)*`, findFn: FindSubDotted,
 			cases: []submatchCase{
 				{"hello", []string{"hello", "hello", ""}},
 				{"abc.def", []string{"abc.def", "abc", ".def"}},
@@ -401,53 +392,22 @@ func TestIntegrationSubmatch(t *testing.T) {
 		},
 	}
 
-	tmpDir := t.TempDir()
-
-	for i, tt := range tests {
-		matchFunc := fmt.Sprintf("Match%d", i)
-		submatchFunc := fmt.Sprintf("FindSubmatch%d", i)
-		src := generateWithSubmatch(t, tt.regex, matchFunc, submatchFunc)
-		writeGenerated(t, tmpDir, fmt.Sprintf("match_%d.go", i), src)
-	}
-
-	var harness bytes.Buffer
-	harness.WriteString("package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n)\n\nfunc main() {\n\tfailed := false\n")
-
-	for i, tt := range tests {
-		submatchFunc := fmt.Sprintf("FindSubmatch%d", i)
-		for j, tc := range tt.cases {
-			if tc.groups == nil {
-				msg := fmt.Sprintf("FAIL [%s] case %d: %s(%q) expected nil", tt.regex, j, submatchFunc, tc.input)
-				fmt.Fprintf(&harness, "\tif result := %s(%q); result != nil {\n", submatchFunc, tc.input)
-				fmt.Fprintf(&harness, "\t\tfmt.Fprintln(os.Stderr, %q, result)\n", msg+", got:")
-				harness.WriteString("\t\tfailed = true\n\t}\n")
-			} else {
-				nilMsg := fmt.Sprintf("FAIL [%s] case %d: %s(%q) returned nil, expected %v", tt.regex, j, submatchFunc, tc.input, tc.groups)
-				wrongMsg := fmt.Sprintf("FAIL [%s] case %d: %s(%q) wrong groups, expected %v, got:", tt.regex, j, submatchFunc, tc.input, tc.groups)
-				fmt.Fprintf(&harness, "\t{\n")
-				fmt.Fprintf(&harness, "\t\tresult := %s(%q)\n", submatchFunc, tc.input)
-				fmt.Fprintf(&harness, "\t\texpected := []string{%s}\n", joinQuoted(tc.groups))
-				fmt.Fprintf(&harness, "\t\tif result == nil {\n")
-				fmt.Fprintf(&harness, "\t\t\tfmt.Fprintln(os.Stderr, %q)\n", nilMsg)
-				fmt.Fprintf(&harness, "\t\t\tfailed = true\n")
-				fmt.Fprintf(&harness, "\t\t} else if strings.Join(result, \",\") != strings.Join(expected, \",\") {\n")
-				fmt.Fprintf(&harness, "\t\t\tfmt.Fprintln(os.Stderr, %q, result)\n", wrongMsg)
-				fmt.Fprintf(&harness, "\t\t\tfailed = true\n")
-				fmt.Fprintf(&harness, "\t\t}\n")
-				fmt.Fprintf(&harness, "\t}\n")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				result := tt.findFn(tc.input)
+				if tc.groups == nil {
+					if result != nil {
+						t.Errorf("FindSubmatch(%q) = %v, want nil", tc.input, result)
+					}
+				} else {
+					if result == nil {
+						t.Errorf("FindSubmatch(%q) = nil, want %v", tc.input, tc.groups)
+					} else if strings.Join(result, ",") != strings.Join(tc.groups, ",") {
+						t.Errorf("FindSubmatch(%q) = %v, want %v", tc.input, result, tc.groups)
+					}
+				}
 			}
-		}
+		})
 	}
-
-	harness.WriteString("\tif failed {\n\t\tos.Exit(1)\n\t}\n\tfmt.Println(\"PASS\")\n}\n")
-	writeGenerated(t, tmpDir, "main.go", harness.Bytes())
-	modInitAndRun(t, tmpDir)
-}
-
-func joinQuoted(ss []string) string {
-	var parts []string
-	for _, s := range ss {
-		parts = append(parts, fmt.Sprintf("%q", s))
-	}
-	return strings.Join(parts, ", ")
 }
