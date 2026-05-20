@@ -11,6 +11,12 @@ var funcMap = template.FuncMap{
 	"stateTransition": stateTransition,
 	"byteCond":        byteCond,
 	"runeCond":        runeCond,
+	"condFn": func(kind string, t templateTransition) string {
+		if kind == "byte" {
+			return byteCond(t)
+		}
+		return runeCond(t)
+	},
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
 		for i := range indices {
@@ -33,10 +39,8 @@ const allTemplates = headerTemplate +
 	utf8LoopPrefixTemplate +
 	asciiContainsTemplate +
 	utf8ContainsTemplate +
-	statesASCIITemplate +
-	statesRuneTemplate +
-	statesASCIIContainsTemplate +
-	statesRuneContainsTemplate +
+	statesTemplate +
+	statesContainsTemplate +
 	acceptCheckTemplate +
 	acceptIDsTemplate +
 	submatchFuncTemplate +
@@ -288,22 +292,25 @@ const utf8ContainsTemplate = `
 
 // ---------- state switch cases ----------
 
-// statesASCII / statesRune are reused for full and prefix (the only
-// difference is the "default" action which lives in the calling template).
+// statesInner handles full/prefix; statesContainsInner handles contains.
+// Byte vs rune condition and the no-match action are passed as parameters.
 
-const statesASCIITemplate = `
-{{- define "statesASCII" }}{{ template "statesASCIIInner" (args . "return false") }}{{ end }}
-{{- define "statesASCIIPrefix" }}{{ template "statesASCIIInner" (args . "goto done") }}{{ end }}
-{{- define "statesASCIIInner" -}}
+const statesTemplate = `
+{{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
+{{- define "statesASCIIPrefix" }}{{ template "statesInner" (args . "byte" "goto done") }}{{ end }}
+{{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
+{{- define "statesRunePrefix" }}{{ template "statesInner" (args . "rune" "goto done") }}{{ end }}
+{{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
-{{- $noMatch := index . 1 -}}
+{{- $condKind := index . 1 -}}
+{{- $noMatch := index . 2 -}}
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
 {{- if .Transitions }}
 			switch {
 {{- range .Transitions }}
-			{{ byteCond . }}
+			{{ condFn $condKind . }}
 				{{ stateTransition $s . }}
 {{- end }}
 			default:
@@ -316,61 +323,19 @@ const statesASCIITemplate = `
 {{- end -}}
 `
 
-const statesRuneTemplate = `
-{{- define "statesRune" }}{{ template "statesRuneInner" (args . "return false") }}{{ end }}
-{{- define "statesRunePrefix" }}{{ template "statesRuneInner" (args . "goto done") }}{{ end }}
-{{- define "statesRuneInner" -}}
+const statesContainsTemplate = `
+{{- define "statesASCIIContains" }}{{ template "statesContainsInner" (args . "byte") }}{{ end }}
+{{- define "statesRuneContains" }}{{ template "statesContainsInner" (args . "rune") }}{{ end }}
+{{- define "statesContainsInner" -}}
 {{- $ctx := index . 0 -}}
-{{- $noMatch := index . 1 -}}
+{{- $condKind := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
-		case {{ .ID }}:
-{{- if .Transitions }}
-			switch {
-{{- range .Transitions }}
-			{{ runeCond . }}
-				{{ stateTransition $s . }}
-{{- end }}
-			default:
-				{{ $noMatch }}
-			}
-{{- else }}
-			{{ $noMatch }}
-{{- end }}
-{{- end }}{{ end }}
-{{- end -}}
-`
-
-const statesASCIIContainsTemplate = `
-{{- define "statesASCIIContains" -}}
-{{- range .States }}{{ if isLive . }}
-{{- $s := . }}
 			case {{ .ID }}:
 {{- if .Transitions }}
 				switch {
 {{- range .Transitions }}
-				{{ byteCond . }}
-					{{ stateTransition $s . }}
-{{- end }}
-				default:
-					dead = true
-				}
-{{- else }}
-				dead = true
-{{- end }}
-{{- end }}{{ end }}
-{{- end -}}
-`
-
-const statesRuneContainsTemplate = `
-{{- define "statesRuneContains" -}}
-{{- range .States }}{{ if isLive . }}
-{{- $s := . }}
-			case {{ .ID }}:
-{{- if .Transitions }}
-				switch {
-{{- range .Transitions }}
-				{{ runeCond . }}
+				{{ condFn $condKind . }}
 					{{ stateTransition $s . }}
 {{- end }}
 				default:
