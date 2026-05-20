@@ -3,11 +3,12 @@ package dfa
 import (
 	"regexp/syntax"
 	"testing"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 var benchPatterns = []struct {
-	name    string
-	pattern string
+	name	string
+	pattern	string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},
@@ -26,14 +27,12 @@ var benchPatterns = []struct {
 func compileProg(b *testing.B, pattern string) *syntax.Prog {
 	b.Helper()
 	re, err := syntax.Parse(pattern, syntax.Perl)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	re = re.Simplify()
 	prog, err := syntax.Compile(re)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	return prog
 }
 

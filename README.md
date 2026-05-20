@@ -65,6 +65,17 @@ The generated `ExtractDate` function returns `[]string` where index 0 is the ful
 
 For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`. Submatch extraction uses a Thompson NFA simulation with capture tracking, gated behind the DFA match for fast rejection.
 
+## Benchmarks
+
+Run all benchmarks (pipeline stages + generated code vs regexp):
+
+```bash
+go generate ./bench/...
+go-toolchain
+```
+
+The pipeline stage benchmarks (parser, DFA builder, codegen) run without `go generate`. The `bench/` package benchmarks compare generated matchers against compiled and uncompiled `regexp.MatchString`.
+
 ## License
 
 [MIT](LICENSE)
