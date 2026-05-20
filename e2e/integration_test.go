@@ -216,6 +216,28 @@ func TestIntegration(t *testing.T) {
 				{"a", false},
 			},
 		},
+		{
+			regex:	`[a-z0-9][a-z0-9._-]{0,127}`,
+			cases: []testCase{
+				{"a", true},
+				{"abc", true},
+				{"a123", true},
+				{"project.name", true},
+				{"my-project", true},
+				{"my_project", true},
+				{"a.b-c_d", true},
+				{"9start", true},
+				{strings.Repeat("a", 128), true},
+				{"", false},
+				{"A", false},
+				{"-start", false},
+				{".start", false},
+				{"_start", false},
+				{strings.Repeat("a", 129), false},
+				{"has space", false},
+				{"UPPER", false},
+			},
+		},
 	}
 
 	for _, tt := range tests {

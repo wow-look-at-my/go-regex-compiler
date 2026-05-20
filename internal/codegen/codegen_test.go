@@ -53,6 +53,7 @@ func TestGenerateProducesValidGo(t *testing.T) {
 		"(foo|bar)baz",
 		`\d{3}-\d{2}-\d{4}`,
 		"",
+		`[a-z0-9][a-z0-9._-]{0,127}`,
 	}
 
 	for _, pattern := range patterns {
@@ -314,6 +315,16 @@ func TestBuildSubmatchContext(t *testing.T) {
 		}
 	}
 	assert.True(t, hasRunes, "expected at least one instruction with runes")
+}
+
+func TestGenerateChainCompression(t *testing.T) {
+	output := generateCode(t, `[a-z0-9][a-z0-9._-]{0,127}`, "testpkg", "Match")
+	assertValidGo(t, output)
+
+	assert.Contains(t, output, "chainCount0")
+
+	lines := strings.Count(output, "\n")
+	assert.Less(t, lines, 200, "generated code should be compact with chain compression, got %d lines", lines)
 }
 
 func TestGenerateEmptyStates(t *testing.T) {

@@ -9,7 +9,14 @@ var funcMap = template.FuncMap{
 	"quoteRune":  quoteRune,
 	"quoteRegex": quoteRegex,
 	"isLive":     func(s templateState) bool { return len(s.Transitions) > 0 || s.Accept },
-	"args": func(args ...any) []any { return args },
+	"args":       func(args ...any) []any { return args },
+	"chainIndices": func(n int) []int {
+		indices := make([]int, n)
+		for i := range indices {
+			indices[i] = i
+		}
+		return indices
+	},
 }
 
 const allTemplates = headerTemplate +
@@ -89,6 +96,9 @@ const edgeCaseEmptyMatchTemplate = "" // placeholder for future use
 const fullBodyTemplate = `
 {{- define "fullBody" -}}
 	state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+	chainCount{{ . }} := 0
+{{- end }}
 {{- if .ASCII }}
 {{ template "asciiLoop" . }}
 {{- else }}
@@ -103,6 +113,9 @@ const fullBodyTemplate = `
 const prefixBodyTemplate = `
 {{- define "prefixBody" -}}
 	state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+	chainCount{{ . }} := 0
+{{- end }}
 {{- if .ASCII }}
 {{ template "asciiLoopPrefix" . }}
 {{- else }}
@@ -197,6 +210,9 @@ const asciiContainsTemplate = `
 {{- else }}
 	for start := 0; start <= len(input); start++ {
 		state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+		chainCount{{ . }} := 0
+{{- end }}
 		matched := false
 		for i := start; i < len(input); i++ {
 			c := input[i]
@@ -231,6 +247,9 @@ const utf8ContainsTemplate = `
 {{- else }}
 	for start := 0; start <= len(input); {
 		state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+		chainCount{{ . }} := 0
+{{- end }}
 		matched := false
 		for i := start; i < len(input); {
 			r, size := utf8.DecodeRuneInString(input[i:])
@@ -280,11 +299,20 @@ const statesASCIITemplate = `
 {{- $ctx := index . 0 -}}
 {{- $noMatch := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
+{{- $s := . }}
 		case {{ .ID }}:
 			switch {
 {{- range .Transitions }}
 			{{ template "byteCondition" . }}
+{{- if $s.IsChain }}
+				if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
+					state = {{ $s.ChainTerminal }}
+				} else {
+					chainCount{{ $s.ChainIndex }}++
+				}
+{{- else }}
 				state = {{ .Next }}
+{{- end }}
 {{- end }}
 			default:
 				{{ $noMatch }}
@@ -300,11 +328,20 @@ const statesRuneTemplate = `
 {{- $ctx := index . 0 -}}
 {{- $noMatch := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
+{{- $s := . }}
 		case {{ .ID }}:
 			switch {
 {{- range .Transitions }}
 			{{ template "runeCondition" . }}
+{{- if $s.IsChain }}
+				if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
+					state = {{ $s.ChainTerminal }}
+				} else {
+					chainCount{{ $s.ChainIndex }}++
+				}
+{{- else }}
 				state = {{ .Next }}
+{{- end }}
 {{- end }}
 			default:
 				{{ $noMatch }}
@@ -316,11 +353,20 @@ const statesRuneTemplate = `
 const statesASCIIContainsTemplate = `
 {{- define "statesASCIIContains" -}}
 {{- range .States }}{{ if isLive . }}
+{{- $s := . }}
 			case {{ .ID }}:
 				switch {
 {{- range .Transitions }}
 				{{ template "byteCondition" . }}
+{{- if $s.IsChain }}
+					if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
+						state = {{ $s.ChainTerminal }}
+					} else {
+						chainCount{{ $s.ChainIndex }}++
+					}
+{{- else }}
 					state = {{ .Next }}
+{{- end }}
 {{- end }}
 				default:
 					dead = true
@@ -332,11 +378,20 @@ const statesASCIIContainsTemplate = `
 const statesRuneContainsTemplate = `
 {{- define "statesRuneContains" -}}
 {{- range .States }}{{ if isLive . }}
+{{- $s := . }}
 			case {{ .ID }}:
 				switch {
 {{- range .Transitions }}
 				{{ template "runeCondition" . }}
+{{- if $s.IsChain }}
+					if chainCount{{ $s.ChainIndex }} >= {{ $s.ChainMaxCount }} {
+						state = {{ $s.ChainTerminal }}
+					} else {
+						chainCount{{ $s.ChainIndex }}++
+					}
+{{- else }}
 					state = {{ .Next }}
+{{- end }}
 {{- end }}
 				default:
 					dead = true
