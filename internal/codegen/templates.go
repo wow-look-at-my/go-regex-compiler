@@ -9,13 +9,11 @@ var funcMap = template.FuncMap{
 	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":            func(args ...any) []any { return args },
 	"stateTransition": stateTransition,
-	"byteCond":        byteCond,
-	"runeCond":        runeCond,
 	"condFn": func(kind string, t templateTransition) string {
 		if kind == "byte" {
-			return byteCond(t)
+			return transitionCond("c", quoteByte, t)
 		}
-		return runeCond(t)
+		return transitionCond("r", quoteRune, t)
 	},
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
