@@ -1,3 +1,12 @@
+//go:generate go run ../cmd/go-regex-compiler --regexabc --funcMatchLiteral --packagebench --outputgen_literal.go
+//go:generate go run ../cmd/go-regex-compiler --regex"[a-z]+" --funcMatchCharClass --packagebench --outputgen_charclass.go
+//go:generate go run ../cmd/go-regex-compiler --regex"\\d{3}-\\d{2}-\\d{4}" --funcMatchSSN --packagebench --outputgen_ssn.go
+//go:generate go run ../cmd/go-regex-compiler --regex"[a-z]+@[a-z]+\\.[a-z]{2,}" --funcMatchEmail --packagebench --outputgen_email.go
+//go:generate go run ../cmd/go-regex-compiler --regex"[A-Za-z_][A-Za-z0-9_]*" --funcMatchIdentifier --packagebench --outputgen_identifier.go
+//go:generate go run ../cmd/go-regex-compiler --regex"(https?://)?[a-z]+\\.[a-z]{2,}" --funcMatchURL --packagebench --outputgen_url.go
+//go:generate go run ../cmd/go-regex-compiler --regex"(?i)hello" --funcMatchCaseInsensitive --packagebench --outputgen_casei.go
+//go:generate go run ../cmd/go-regex-compiler --regex"#[0-9a-f]{6}" --funcMatchHexColor --packagebench --outputgen_hexcolor.go
+
 package bench
 
 import (

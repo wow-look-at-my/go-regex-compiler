@@ -11,20 +11,20 @@ go install github.com/wow-look-at-my/go-regex-compiler/cmd/go-regex-compiler@lat
 ## Usage
 
 ```bash
-go-regex-compiler -regex 'pattern' [flags]
+go-regex-compiler --regex 'pattern' [flags]
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-regex` | *(required)* | Regular expression to compile |
-| `-package` | `$GOPACKAGE` or `"main"` | Package name for generated code |
-| `-func` | `Match` | Name of the generated match function |
-| `-output` | stdout | Output file path |
-| `-match` | `full` | Match mode: `full`, `prefix`, or `contains` |
-| `-submatch` | `false` | Generate a `FindSubmatch` function for capture groups |
-| `-submatch-func` | `FindSubmatch` | Name of the generated submatch function |
+| `--regex` | *(required)* | Regular expression to compile |
+| `--package` | `$GOPACKAGE` or `"main"` | Package name for generated code |
+| `--func` | `Match` | Name of the generated match function |
+| `--output` | stdout | Output file path |
+| `--match` | `full` | Match mode: `full`, `prefix`, or `contains` |
+| `--submatch` | `false` | Generate a `FindSubmatch` function for capture groups |
+| `--submatch-func` | `FindSubmatch` | Name of the generated submatch function |
 
 ### Match modes
 
@@ -37,22 +37,22 @@ go-regex-compiler -regex 'pattern' [flags]
 Generate a function that matches email-like patterns:
 
 ```bash
-go-regex-compiler -regex '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
-  -func IsEmail -package validators -output email.go
+go-regex-compiler --regex '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' \
+  --func IsEmail --package validators --output email.go
 ```
 
 Use with `go generate`:
 
 ```go
-//go:generate go-regex-compiler -regex "^[0-9]{3}-[0-9]{4}$" -func MatchPhone -output phone_match.go
+//go:generate go-regex-compiler --regex "^[0-9]{3}-[0-9]{4}$" --func MatchPhone --output phone_match.go
 ```
 
 Generate with capture group extraction:
 
 ```bash
-go-regex-compiler -regex '([0-9]{4})-([0-9]{2})-([0-9]{2})' \
-  -func MatchDate -submatch -submatch-func ExtractDate \
-  -package main -output date.go
+go-regex-compiler --regex '([0-9]{4})-([0-9]{2})-([0-9]{2})' \
+  --func MatchDate --submatch --submatch-func ExtractDate \
+  --package main --output date.go
 ```
 
 The generated `ExtractDate` function returns `[]string` where index 0 is the full match and indices 1..N are the capture groups, or `nil` if the input doesn't match.

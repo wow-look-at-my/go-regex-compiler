@@ -1,3 +1,9 @@
+//go:generate go run ../cmd/go-regex-compiler --regex"[a-z]+" --funcMatchCharClass --packagee2e --outputgen_charclass.go
+//go:generate go run ../cmd/go-regex-compiler --regex"\\d{3}-\\d{2}-\\d{4}" --funcMatchSSN --packagee2e --outputgen_ssn.go
+//go:generate go run ../cmd/go-regex-compiler --regex"[A-Za-z_][A-Za-z0-9_]*" --funcMatchIdentifier --packagee2e --outputgen_identifier.go
+//go:generate go run ../cmd/go-regex-compiler --regex"(https?://)?[a-z]+\\.[a-z]{2,}" --funcMatchURL --packagee2e --outputgen_url.go
+//go:generate go run ../cmd/go-regex-compiler --regex"(?i)hello" --funcMatchCaseInsensitive --packagee2e --outputgen_casei.go
+
 package e2e_test
 
 import (
