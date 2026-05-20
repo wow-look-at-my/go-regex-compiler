@@ -319,10 +319,17 @@ func quoteRegex(s string) string {
 
 func stateTransition(s templateState, t templateTransition) string {
 	if s.IsChain {
-		return fmt.Sprintf("if chainCount%d >= %d {\nstate = %d\n} else {\nchainCount%d++\n}",
+		return fmt.Sprintf("if chainCount%d >= %d { state = %d } else { chainCount%d++ }",
 			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
 	}
 	return fmt.Sprintf("state = %d", t.Next)
+}
+
+func shouldFallthrough(s templateState, i int) bool {
+	if i >= len(s.Transitions)-1 {
+		return false
+	}
+	return stateTransition(s, s.Transitions[i]) == stateTransition(s, s.Transitions[i+1])
 }
 
 func byteCond(t templateTransition) string {
