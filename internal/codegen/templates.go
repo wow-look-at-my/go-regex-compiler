@@ -300,14 +300,17 @@ const statesASCIITemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
-			switch {
-{{- range .Transitions }}
-			{{ byteCond . }}
-				{{ stateTransition $s . }}
+{{- if .Transitions }}
+{{- range $i, $t := .Transitions }}
+			{{ byteCond $i $t }}
+				{{ stateTransition $s $t }}
 {{- end }}
-			default:
+			} else {
 				{{ $noMatch }}
 			}
+{{- else }}
+			{{ $noMatch }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -321,14 +324,17 @@ const statesRuneTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
-			switch {
-{{- range .Transitions }}
-			{{ runeCond . }}
-				{{ stateTransition $s . }}
+{{- if .Transitions }}
+{{- range $i, $t := .Transitions }}
+			{{ runeCond $i $t }}
+				{{ stateTransition $s $t }}
 {{- end }}
-			default:
+			} else {
 				{{ $noMatch }}
 			}
+{{- else }}
+			{{ $noMatch }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -338,14 +344,17 @@ const statesASCIIContainsTemplate = `
 {{- range .States }}{{ if isLive . }}
 {{- $s := . }}
 			case {{ .ID }}:
-				switch {
-{{- range .Transitions }}
-				{{ byteCond . }}
-					{{ stateTransition $s . }}
+{{- if .Transitions }}
+{{- range $i, $t := .Transitions }}
+				{{ byteCond $i $t }}
+					{{ stateTransition $s $t }}
 {{- end }}
-				default:
+				} else {
 					dead = true
 				}
+{{- else }}
+				dead = true
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -355,14 +364,17 @@ const statesRuneContainsTemplate = `
 {{- range .States }}{{ if isLive . }}
 {{- $s := . }}
 			case {{ .ID }}:
-				switch {
-{{- range .Transitions }}
-				{{ runeCond . }}
-					{{ stateTransition $s . }}
+{{- if .Transitions }}
+{{- range $i, $t := .Transitions }}
+				{{ runeCond $i $t }}
+					{{ stateTransition $s $t }}
 {{- end }}
-				default:
+				} else {
 					dead = true
 				}
+{{- else }}
+				dead = true
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
