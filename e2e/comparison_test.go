@@ -3,24 +3,19 @@ package e2e_test
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/testify/assert"
 	"github.com/wow-look-at-my/testify/require"
-	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
-	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
-	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
 )
 
-// testPatterns are the regex patterns used across correctness, benchmark, and size tests.
 var testPatterns = []struct {
-	name	string
-	pattern	string
+	name    string
+	pattern string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},
@@ -44,7 +39,6 @@ var testPatterns = []struct {
 	{"hex_color", `#[0-9a-f]{6}`},
 }
 
-// testInputs are diverse inputs used for correctness comparison against regexp.
 var testInputs = []string{
 	"",
 	"a", "b", "c", "ab", "abc", "abcd", "abcabc",
@@ -67,77 +61,46 @@ var testInputs = []string{
 	strings.Repeat("x", 1000),
 }
 
-// generate runs the go-regex-compiler pipeline and returns the generated Go source code.
-func generate(t *testing.T, pattern string) []byte {
-	t.Helper()
-	prog, err := parser.Parse(pattern)
-	require.NoError(t, err)
-	d, err := dfa.Build(prog)
-	require.NoError(t, err)
-	var buf bytes.Buffer
-	opts := codegen.Options{
-		PackageName:	"main",
-		FuncName:	"Match",
-		Regex:		pattern,
-	}
-	require.NoError(t, codegen.Generate(&buf, d, opts))
-	return buf.Bytes()
-}
-
-// anchoredRegexp returns a compiled regexp that does full-string matching.
 func anchoredRegexp(pattern string) *regexp.Regexp {
 	return regexp.MustCompile("^(?:" + pattern + ")$")
 }
 
-// TestCorrectnessVsRegexp generates code for each pattern, compiles and runs it
-// against all test inputs, and compares the result to regexp.MatchString.
+// TestCorrectnessVsRegexp generates code for all patterns, compiles them in a
+// single binary, and compares results against regexp.MatchString.
 func TestCorrectnessVsRegexp(t *testing.T) {
-	for _, tp := range testPatterns {
-		t.Run(tp.name, func(t *testing.T) {
-			t.Parallel()
-			src := generate(t, tp.pattern)
-			re := anchoredRegexp(tp.pattern)
+	tmpDir := t.TempDir()
 
-			tmpDir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644))
-
-			var harness bytes.Buffer
-			harness.WriteString("package main\n\n")
-			harness.WriteString("import (\n\t\"fmt\"\n\t\"os\"\n)\n\n")
-			harness.WriteString("func main() {\n")
-			harness.WriteString("\tfailed := false\n")
-
-			for _, input := range testInputs {
-				expected := re.MatchString(input)
-				fmt.Fprintf(&harness, "\tif Match(%q) != %v {\n", input, expected)
-				fmt.Fprintf(&harness, "\t\tfmt.Fprintf(os.Stderr, \"MISMATCH: Match(%%q) = %%v, want %v\\n\", %q, Match(%q))\n", expected, input, input)
-				harness.WriteString("\t\tfailed = true\n")
-				harness.WriteString("\t}\n")
-			}
-
-			harness.WriteString("\tif failed {\n\t\tos.Exit(1)\n\t}\n")
-			harness.WriteString("\tfmt.Println(\"PASS\")\n}\n")
-
-			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644))
-
-			initCmd := exec.Command("go", "mod", "init", "testmod")
-			initCmd.Dir = tmpDir
-			out, err := initCmd.CombinedOutput()
-			require.NoError(t, err, "go mod init: %s", out)
-
-			runCmd := exec.Command("go", "run", ".")
-			runCmd.Dir = tmpDir
-			out, err = runCmd.CombinedOutput()
-			assert.NoError(t, err, "correctness mismatch for pattern %q:\n%s", tp.pattern, out)
-		})
+	for i, tp := range testPatterns {
+		funcName := fmt.Sprintf("Match%d", i)
+		src := generateNamed(t, tp.pattern, funcName, codegen.MatchFull)
+		writeGenerated(t, tmpDir, fmt.Sprintf("matcher_%d.go", i), src)
 	}
+
+	var harness bytes.Buffer
+	harness.WriteString("package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() {\n\tfailed := false\n")
+
+	for i, tp := range testPatterns {
+		re := anchoredRegexp(tp.pattern)
+		funcName := fmt.Sprintf("Match%d", i)
+		for _, input := range testInputs {
+			expected := re.MatchString(input)
+			fmt.Fprintf(&harness, "\tif %s(%q) != %v {\n", funcName, input, expected)
+			fmt.Fprintf(&harness, "\t\tfmt.Fprintf(os.Stderr, \"MISMATCH [%s]: %s(%%q) = %%v, want %v\\n\", %q, %s(%q))\n",
+				tp.name, funcName, expected, input, funcName, input)
+			harness.WriteString("\t\tfailed = true\n\t}\n")
+		}
+	}
+
+	harness.WriteString("\tif failed {\n\t\tos.Exit(1)\n\t}\n\tfmt.Println(\"PASS\")\n}\n")
+	writeGenerated(t, tmpDir, "main.go", harness.Bytes())
+	modInitAndRun(t, tmpDir)
 }
 
 // TestCodeSize reports the generated code size (bytes and lines) for each pattern.
 func TestCodeSize(t *testing.T) {
 	for _, tp := range testPatterns {
 		t.Run(tp.name, func(t *testing.T) {
-			src := generate(t, tp.pattern)
+			src := generateNamed(t, tp.pattern, "Match", codegen.MatchFull)
 			lines := bytes.Count(src, []byte("\n"))
 			assert.NotEmpty(t, src, "generated code should not be empty")
 			t.Logf("pattern=%-35s  bytes=%-6d  lines=%-4d", fmt.Sprintf("%q", tp.pattern), len(src), lines)
@@ -145,97 +108,73 @@ func TestCodeSize(t *testing.T) {
 	}
 }
 
-// TestBenchmarkVsRegexp generates code for each pattern, compiles a benchmark
-// binary, and runs it. The benchmark compares generated code vs regexp.MatchString.
+// TestBenchmarkVsRegexp generates code for all patterns, compiles a single
+// benchmark binary, and runs it.
 func TestBenchmarkVsRegexp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping benchmarks in short mode")
 	}
 
-	for _, tp := range testPatterns {
-		t.Run(tp.name, func(t *testing.T) {
-			t.Parallel()
-			src := generate(t, tp.pattern)
-			tmpDir := t.TempDir()
+	tmpDir := t.TempDir()
 
-			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher.go"), src, 0644))
-
-			var bench bytes.Buffer
-			bench.WriteString("package main\n\n")
-			bench.WriteString("import (\n\t\"regexp\"\n\t\"testing\"\n)\n\n")
-
-			re := anchoredRegexp(tp.pattern)
-			var matchInput, noMatchInput string
-			for _, input := range testInputs {
-				if re.MatchString(input) && matchInput == "" {
-					matchInput = input
-				}
-				if !re.MatchString(input) && noMatchInput == "" && input != "" {
-					noMatchInput = input
-				}
-				if matchInput != "" && noMatchInput != "" {
-					break
-				}
-			}
-			if matchInput == "" {
-				matchInput = ""
-			}
-			if noMatchInput == "" {
-				noMatchInput = "ZZZZZ_no_match"
-			}
-
-			fmt.Fprintf(&bench, "var re = regexp.MustCompile(%q)\n\n", "^(?:"+tp.pattern+")$")
-
-			fmt.Fprintf(&bench, "func BenchmarkGenerated_Match(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", matchInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n\n")
-
-			fmt.Fprintf(&bench, "func BenchmarkRegexp_Match(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", matchInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n\n")
-
-			fmt.Fprintf(&bench, "func BenchmarkGenerated_NoMatch(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", noMatchInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n\n")
-
-			fmt.Fprintf(&bench, "func BenchmarkRegexp_NoMatch(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", noMatchInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n\n")
-
-			longInput := strings.Repeat(matchInput+"x", 100)
-			fmt.Fprintf(&bench, "func BenchmarkGenerated_Long(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", longInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tMatch(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n\n")
-
-			fmt.Fprintf(&bench, "func BenchmarkRegexp_Long(b *testing.B) {\n")
-			fmt.Fprintf(&bench, "\tinput := %q\n", longInput)
-			fmt.Fprintf(&bench, "\tfor b.Loop() {\n")
-			fmt.Fprintf(&bench, "\t\tre.MatchString(input)\n")
-			fmt.Fprintf(&bench, "\t}\n}\n")
-
-			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher_test.go"), bench.Bytes(), 0644))
-
-			initCmd := exec.Command("go", "mod", "init", "testmod")
-			initCmd.Dir = tmpDir
-			out, err := initCmd.CombinedOutput()
-			require.NoError(t, err, "go mod init: %s", out)
-
-			runCmd := exec.Command("go", "test", "-bench=.", "-benchmem", "-count=1", "-benchtime=100ms")
-			runCmd.Dir = tmpDir
-			out, err = runCmd.CombinedOutput()
-			require.NoError(t, err, "benchmark failed for %q:\n%s", tp.pattern, out)
-
-			t.Logf("pattern %q:\n%s", tp.pattern, out)
-		})
+	for i, tp := range testPatterns {
+		funcName := fmt.Sprintf("Match%d", i)
+		src := generateNamed(t, tp.pattern, funcName, codegen.MatchFull)
+		writeGenerated(t, tmpDir, fmt.Sprintf("matcher_%d.go", i), src)
 	}
+
+	var bench bytes.Buffer
+	bench.WriteString("package main\n\nimport (\n\t\"regexp\"\n\t\"testing\"\n)\n\n")
+
+	for i, tp := range testPatterns {
+		re := anchoredRegexp(tp.pattern)
+		funcName := fmt.Sprintf("Match%d", i)
+
+		var matchInput, noMatchInput string
+		for _, input := range testInputs {
+			if re.MatchString(input) && matchInput == "" {
+				matchInput = input
+			}
+			if !re.MatchString(input) && noMatchInput == "" && input != "" {
+				noMatchInput = input
+			}
+			if matchInput != "" && noMatchInput != "" {
+				break
+			}
+		}
+		if noMatchInput == "" {
+			noMatchInput = "ZZZZZ_no_match"
+		}
+
+		fmt.Fprintf(&bench, "var re%d = regexp.MustCompile(%q)\n\n", i, "^(?:"+tp.pattern+")$")
+
+		fmt.Fprintf(&bench, "func BenchmarkGenerated_%s_Match(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\t%s(input)\n\t}\n}\n\n",
+			tp.name, matchInput, funcName)
+		fmt.Fprintf(&bench, "func BenchmarkRegexp_%s_Match(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\tre%d.MatchString(input)\n\t}\n}\n\n",
+			tp.name, matchInput, i)
+
+		fmt.Fprintf(&bench, "func BenchmarkGenerated_%s_NoMatch(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\t%s(input)\n\t}\n}\n\n",
+			tp.name, noMatchInput, funcName)
+		fmt.Fprintf(&bench, "func BenchmarkRegexp_%s_NoMatch(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\tre%d.MatchString(input)\n\t}\n}\n\n",
+			tp.name, noMatchInput, i)
+
+		longInput := strings.Repeat(matchInput+"x", 100)
+		fmt.Fprintf(&bench, "func BenchmarkGenerated_%s_Long(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\t%s(input)\n\t}\n}\n\n",
+			tp.name, longInput, funcName)
+		fmt.Fprintf(&bench, "func BenchmarkRegexp_%s_Long(b *testing.B) {\n\tinput := %q\n\tfor b.Loop() {\n\t\tre%d.MatchString(input)\n\t}\n}\n\n",
+			tp.name, longInput, i)
+	}
+
+	writeGenerated(t, tmpDir, "matcher_test.go", bench.Bytes())
+
+	initCmd := exec.Command("go", "mod", "init", "testmod")
+	initCmd.Dir = tmpDir
+	out, err := initCmd.CombinedOutput()
+	require.NoError(t, err, "go mod init: %s", out)
+
+	runCmd := exec.Command("go", "test", "-bench=.", "-benchmem", "-count=1", "-benchtime=100ms")
+	runCmd.Dir = tmpDir
+	out, err = runCmd.CombinedOutput()
+	require.NoError(t, err, "benchmark failed:\n%s", out)
+	t.Logf("benchmarks:\n%s", out)
 }
