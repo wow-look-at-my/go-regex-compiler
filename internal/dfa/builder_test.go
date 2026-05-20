@@ -4,8 +4,8 @@ import (
 	"regexp/syntax"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func parse(t *testing.T, pattern string) *syntax.Prog {
@@ -125,8 +125,8 @@ func TestBuildCaseInsensitive(t *testing.T) {
 func TestEpsilonClosure(t *testing.T) {
 	prog := parse(t, "a")
 	b := &builder{
-		prog:     prog,
-		stateMap: make(map[string]int),
+		prog:		prog,
+		stateMap:	make(map[string]int),
 	}
 
 	closure := b.epsilonClosure([]int{prog.Start})
@@ -136,9 +136,9 @@ func TestEpsilonClosure(t *testing.T) {
 
 func TestMergeRuneRanges(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  []rune
-		expect []rune
+		name	string
+		input	[]rune
+		expect	[]rune
 	}{
 		{"no overlap", []rune{'a', 'c', 'e', 'g'}, []rune{'a', 'c', 'e', 'g'}},
 		{"overlap", []rune{'a', 'd', 'c', 'f'}, []rune{'a', 'f'}},

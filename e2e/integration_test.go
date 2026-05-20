@@ -9,25 +9,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
 )
 
 type testCase struct {
-	input string
-	match bool
+	input	string
+	match	bool
 }
 
 func TestIntegration(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		regex	string
+		cases	[]testCase
 	}{
 		{
-			regex: "abc",
+			regex:	"abc",
 			cases: []testCase{
 				{"abc", true},
 				{"", false},
@@ -38,7 +38,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "[a-z]+",
+			regex:	"[a-z]+",
 			cases: []testCase{
 				{"hello", true},
 				{"a", true},
@@ -50,7 +50,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a*",
+			regex:	"a*",
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -60,7 +60,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a+",
+			regex:	"a+",
 			cases: []testCase{
 				{"a", true},
 				{"aaa", true},
@@ -70,7 +70,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a?",
+			regex:	"a?",
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -79,7 +79,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "a|b",
+			regex:	"a|b",
 			cases: []testCase{
 				{"a", true},
 				{"b", true},
@@ -89,7 +89,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(a|b)*c",
+			regex:	"(a|b)*c",
 			cases: []testCase{
 				{"c", true},
 				{"ac", true},
@@ -103,7 +103,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}-\d{4}`,
+			regex:	`\d{3}-\d{2}-\d{4}`,
 			cases: []testCase{
 				{"123-45-6789", true},
 				{"000-00-0000", true},
@@ -114,7 +114,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `[A-Za-z_][A-Za-z0-9_]*`,
+			regex:	`[A-Za-z_][A-Za-z0-9_]*`,
 			cases: []testCase{
 				{"x", true},
 				{"_", true},
@@ -129,7 +129,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `[0-9]+\.[0-9]+`,
+			regex:	`[0-9]+\.[0-9]+`,
 			cases: []testCase{
 				{"1.0", true},
 				{"123.456", true},
@@ -141,7 +141,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(foo|bar)baz",
+			regex:	"(foo|bar)baz",
 			cases: []testCase{
 				{"foobaz", true},
 				{"barbaz", true},
@@ -151,7 +151,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `(https?://)?[a-z]+\.[a-z]{2,}`,
+			regex:	`(https?://)?[a-z]+\.[a-z]{2,}`,
 			cases: []testCase{
 				{"example.com", true},
 				{"http://example.com", true},
@@ -163,14 +163,14 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "",
+			regex:	"",
 			cases: []testCase{
 				{"", true},
 				{"a", false},
 			},
 		},
 		{
-			regex: ".",
+			regex:	".",
 			cases: []testCase{
 				{"a", true},
 				{"1", true},
@@ -181,7 +181,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: "(?i)abc",
+			regex:	"(?i)abc",
 			cases: []testCase{
 				{"abc", true},
 				{"ABC", true},
@@ -194,7 +194,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\w+`,
+			regex:	`\w+`,
 			cases: []testCase{
 				{"hello", true},
 				{"Hello123", true},
@@ -206,7 +206,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			regex: `\s+`,
+			regex:	`\s+`,
 			cases: []testCase{
 				{" ", true},
 				{"\t", true},
@@ -227,35 +227,35 @@ func TestIntegration(t *testing.T) {
 
 func TestIntegrationPrefix(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		regex	string
+		cases	[]testCase
 	}{
 		{
-			regex: "[a-z]+",
+			regex:	"[a-z]+",
 			cases: []testCase{
 				{"hello", true},
-				{"hello123", true}, // prefix "hello" matches
+				{"hello123", true},	// prefix "hello" matches
 				{"hello world", true},
 				{"", false},
 				{"123", false},
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}`,
+			regex:	`\d{3}-\d{2}`,
 			cases: []testCase{
 				{"123-45", true},
-				{"123-45-6789", true}, // prefix matches
+				{"123-45-6789", true},	// prefix matches
 				{"12-45", false},
 				{"abc", false},
 			},
 		},
 		{
-			regex: "a+b",
+			regex:	"a+b",
 			cases: []testCase{
 				{"ab", true},
 				{"aab", true},
-				{"aabcdef", true}, // prefix "aab" matches
-				{"a", false},     // no prefix matches (b required)
+				{"aabcdef", true},	// prefix "aab" matches
+				{"a", false},		// no prefix matches (b required)
 				{"aaac", false},
 				{"", false},
 			},
@@ -271,31 +271,31 @@ func TestIntegrationPrefix(t *testing.T) {
 
 func TestIntegrationContains(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []testCase
+		regex	string
+		cases	[]testCase
 	}{
 		{
-			regex: "[a-z]+",
+			regex:	"[a-z]+",
 			cases: []testCase{
 				{"hello", true},
-				{"123hello456", true},    // substring matches
-				{"HELLO", false},         // no lowercase substring
+				{"123hello456", true},	// substring matches
+				{"HELLO", false},	// no lowercase substring
 				{"123", false},
 				{"", false},
 				{"test@example.com", true},
 			},
 		},
 		{
-			regex: `\d{3}-\d{2}-\d{4}`,
+			regex:	`\d{3}-\d{2}-\d{4}`,
 			cases: []testCase{
 				{"123-45-6789", true},
-				{"SSN: 123-45-6789!", true}, // contained
+				{"SSN: 123-45-6789!", true},	// contained
 				{"abc", false},
 				{"123-45", false},
 			},
 		},
 		{
-			regex: "error",
+			regex:	"error",
 			cases: []testCase{
 				{"error", true},
 				{"an error occurred", true},
@@ -313,17 +313,17 @@ func TestIntegrationContains(t *testing.T) {
 }
 
 type submatchCase struct {
-	input  string
-	groups []string // nil means no match, else groups[0]=full match, groups[1..]=captures
+	input	string
+	groups	[]string	// nil means no match, else groups[0]=full match, groups[1..]=captures
 }
 
 func TestIntegrationSubmatch(t *testing.T) {
 	tests := []struct {
-		regex string
-		cases []submatchCase
+		regex	string
+		cases	[]submatchCase
 	}{
 		{
-			regex: `([a-z]+)@([a-z]+)`,
+			regex:	`([a-z]+)@([a-z]+)`,
 			cases: []submatchCase{
 				{"user@host", []string{"user@host", "user", "host"}},
 				{"abc@xyz", []string{"abc@xyz", "abc", "xyz"}},
@@ -332,7 +332,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(\d{3})-(\d{2})-(\d{4})`,
+			regex:	`(\d{3})-(\d{2})-(\d{4})`,
 			cases: []submatchCase{
 				{"123-45-6789", []string{"123-45-6789", "123", "45", "6789"}},
 				{"000-00-0000", []string{"000-00-0000", "000", "00", "0000"}},
@@ -340,7 +340,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(a+)(b+)`,
+			regex:	`(a+)(b+)`,
 			cases: []submatchCase{
 				{"ab", []string{"ab", "a", "b"}},
 				{"aaabbb", []string{"aaabbb", "aaa", "bbb"}},
@@ -349,7 +349,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `(foo|bar)baz`,
+			regex:	`(foo|bar)baz`,
 			cases: []submatchCase{
 				{"foobaz", []string{"foobaz", "foo"}},
 				{"barbaz", []string{"barbaz", "bar"}},
@@ -357,7 +357,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			regex: `([a-z]+)(\.[a-z]+)*`,
+			regex:	`([a-z]+)(\.[a-z]+)*`,
 			cases: []submatchCase{
 				{"hello", []string{"hello", "hello", ""}},
 				{"abc.def", []string{"abc.def", "abc", ".def"}},
@@ -384,19 +384,19 @@ func runGeneratedSubmatchTest(t *testing.T, regex string, cases []submatchCase) 
 
 	var buf bytes.Buffer
 	opts := codegen.Options{
-		PackageName: "main",
-		FuncName:    "Match",
-		Regex:       regex,
-		Mode:        codegen.MatchFull,
+		PackageName:	"main",
+		FuncName:	"Match",
+		Regex:		regex,
+		Mode:		codegen.MatchFull,
 	}
 	if result.NumGroups > 0 {
 		opts.Submatch = &codegen.SubmatchOptions{
-			PackageName: "main",
-			FuncName:    "FindSubmatch",
-			MatchFunc:   "Match",
-			Regex:       regex,
-			Prog:        result.Prog,
-			NumGroups:   result.NumGroups,
+			PackageName:	"main",
+			FuncName:	"FindSubmatch",
+			MatchFunc:	"Match",
+			Regex:		regex,
+			Prog:		result.Prog,
+			NumGroups:	result.NumGroups,
 		}
 	}
 	err = codegen.Generate(&buf, d, opts)
@@ -483,10 +483,10 @@ func runGeneratedTest(t *testing.T, regex string, mode codegen.MatchMode, funcNa
 
 	var buf bytes.Buffer
 	opts := codegen.Options{
-		PackageName: "main",
-		FuncName:    funcName,
-		Regex:       regex,
-		Mode:        mode,
+		PackageName:	"main",
+		FuncName:	funcName,
+		Regex:		regex,
+		Mode:		mode,
 	}
 	err = codegen.Generate(&buf, d, opts)
 	require.NoError(t, err)

@@ -4,15 +4,15 @@ import (
 	"regexp/syntax"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func TestParse(t *testing.T) {
 	tests := []struct {
-		name    string
-		pattern string
-		wantErr bool
+		name	string
+		pattern	string
+		wantErr	bool
 	}{
 		{"literal", "abc", false},
 		{"character class", "[a-z]", false},
