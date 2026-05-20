@@ -69,16 +69,19 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --match mode %q: must be full, prefix, or contains", matchMode)
 	}
 
+	// Stage 1: Parse regex into NFA (with capture group info)
 	result, err := parser.ParseResult(regex)
 	if err != nil {
 		return err
 	}
 
+	// Stage 2: Build DFA from NFA
 	d, err := dfa.Build(result.Prog)
 	if err != nil {
 		return err
 	}
 
+	// Stage 3: Generate Go code
 	opts := codegen.Options{
 		PackageName: pkg,
 		FuncName:    funcName,
