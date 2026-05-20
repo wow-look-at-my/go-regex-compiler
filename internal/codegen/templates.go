@@ -6,7 +6,7 @@ var tmpl = template.Must(template.New("").Funcs(funcMap).Parse(allTemplates))
 
 var funcMap = template.FuncMap{
 	"quoteRegex":      quoteRegex,
-	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 || s.Accept },
+	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":            func(args ...any) []any { return args },
 	"stateTransition": stateTransition,
 	"byteCond":        byteCond,
@@ -307,7 +307,6 @@ const statesTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
-{{- if .Transitions }}
 			switch {
 {{- range .Transitions }}
 			{{ condFn $condKind . }}
@@ -316,9 +315,6 @@ const statesTemplate = `
 			default:
 				{{ $noMatch }}
 			}
-{{- else }}
-			{{ $noMatch }}
-{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -332,7 +328,6 @@ const statesContainsTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 			case {{ .ID }}:
-{{- if .Transitions }}
 				switch {
 {{- range .Transitions }}
 				{{ condFn $condKind . }}
@@ -341,9 +336,6 @@ const statesContainsTemplate = `
 				default:
 					dead = true
 				}
-{{- else }}
-				dead = true
-{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
