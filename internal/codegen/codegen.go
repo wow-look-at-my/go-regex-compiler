@@ -46,6 +46,7 @@ type templateContext struct {
 	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
 	StartAccepts bool // start state is accepting (for contains early-return)
 	NumChains    int
+	HasRanges    bool
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -137,6 +138,18 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	compressChains(&ctx)
+
+	for _, s := range ctx.States {
+		for _, t := range s.Transitions {
+			if t.Lo != t.Hi {
+				ctx.HasRanges = true
+				break
+			}
+		}
+		if ctx.HasRanges {
+			break
+		}
+	}
 
 	return ctx
 }
@@ -335,7 +348,7 @@ func groupByteTransitions(s templateState) []groupedCase {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("c == %s", quoteByte(t.Lo))
 		}
-		return fmt.Sprintf("inRange(c, %s, %s)", quoteByte(t.Lo), quoteByte(t.Hi))
+		return fmt.Sprintf("match.InRange(c, %s, %s)", quoteByte(t.Lo), quoteByte(t.Hi))
 	})
 }
 
@@ -344,7 +357,7 @@ func groupRuneTransitions(s templateState) []groupedCase {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("r == %s", quoteRune(t.Lo))
 		}
-		return fmt.Sprintf("inRange(r, %s, %s)", quoteRune(t.Lo), quoteRune(t.Hi))
+		return fmt.Sprintf("match.InRange(r, %s, %s)", quoteRune(t.Lo), quoteRune(t.Hi))
 	})
 }
 

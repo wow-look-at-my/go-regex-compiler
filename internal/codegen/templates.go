@@ -51,11 +51,13 @@ const headerTemplate = `
 // Source regex: {{ quoteRegex .Regex }}
 
 package {{ .PackageName }}
+
+{{ if .HasRanges }}
+import "github.com/wow-look-at-my/go-regex-compiler/match"
+{{ end }}
 {{ if not .ASCII }}
 import "unicode/utf8"
 {{ end }}
-func inRange[T byte | rune](c, lo, hi T) bool { return c >= lo && c <= hi }
-
 {{ end -}}
 `
 

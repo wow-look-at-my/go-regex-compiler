@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,27 @@ import (
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
 )
+
+func projectRoot() string {
+	_, f, _, _ := runtime.Caller(0)
+	return filepath.Dir(filepath.Dir(f))
+}
+
+func initTestModule(t *testing.T, dir string) {
+	t.Helper()
+	root := projectRoot()
+	cmds := [][]string{
+		{"go", "mod", "init", "testmod"},
+		{"go", "mod", "edit", "-require=github.com/wow-look-at-my/go-regex-compiler@v0.0.0"},
+		{"go", "mod", "edit", "-replace=github.com/wow-look-at-my/go-regex-compiler=" + root},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s failed: %s", args, out)
+	}
+}
 
 type testCase struct {
 	input	string
@@ -474,14 +496,11 @@ func runGeneratedSubmatchTest(t *testing.T, regex string, cases []submatchCase) 
 	err = os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644)
 	require.NoError(t, err)
 
-	initCmd := exec.Command("go", "mod", "init", "testmod")
-	initCmd.Dir = tmpDir
-	out, err := initCmd.CombinedOutput()
-	require.NoError(t, err, "go mod init failed: %s", out)
+	initTestModule(t, tmpDir)
 
 	runCmd := exec.Command("go", "run", ".")
 	runCmd.Dir = tmpDir
-	out, err = runCmd.CombinedOutput()
+	out, err := runCmd.CombinedOutput()
 	assert.NoError(t, err, "generated submatch code failed for regex %q:\n%s", regex, out)
 }
 
@@ -543,13 +562,10 @@ func runGeneratedTest(t *testing.T, regex string, mode codegen.MatchMode, funcNa
 	err = os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644)
 	require.NoError(t, err)
 
-	initCmd := exec.Command("go", "mod", "init", "testmod")
-	initCmd.Dir = tmpDir
-	out, err := initCmd.CombinedOutput()
-	require.NoError(t, err, "go mod init failed: %s", out)
+	initTestModule(t, tmpDir)
 
 	runCmd := exec.Command("go", "run", ".")
 	runCmd.Dir = tmpDir
-	out, err = runCmd.CombinedOutput()
+	out, err := runCmd.CombinedOutput()
 	assert.NoError(t, err, "generated code failed for regex %q (mode %d):\n%s", regex, mode, out)
 }

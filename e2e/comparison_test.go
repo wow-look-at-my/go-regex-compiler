@@ -120,14 +120,11 @@ func TestCorrectnessVsRegexp(t *testing.T) {
 
 			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "main.go"), harness.Bytes(), 0644))
 
-			initCmd := exec.Command("go", "mod", "init", "testmod")
-			initCmd.Dir = tmpDir
-			out, err := initCmd.CombinedOutput()
-			require.NoError(t, err, "go mod init: %s", out)
+			initTestModule(t, tmpDir)
 
 			runCmd := exec.Command("go", "run", ".")
 			runCmd.Dir = tmpDir
-			out, err = runCmd.CombinedOutput()
+			out, err := runCmd.CombinedOutput()
 			assert.NoError(t, err, "correctness mismatch for pattern %q:\n%s", tp.pattern, out)
 		})
 	}
@@ -225,14 +222,11 @@ func TestBenchmarkVsRegexp(t *testing.T) {
 
 			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "matcher_test.go"), bench.Bytes(), 0644))
 
-			initCmd := exec.Command("go", "mod", "init", "testmod")
-			initCmd.Dir = tmpDir
-			out, err := initCmd.CombinedOutput()
-			require.NoError(t, err, "go mod init: %s", out)
+			initTestModule(t, tmpDir)
 
 			runCmd := exec.Command("go", "test", "-bench=.", "-benchmem", "-count=1", "-benchtime=100ms")
 			runCmd.Dir = tmpDir
-			out, err = runCmd.CombinedOutput()
+			out, err := runCmd.CombinedOutput()
 			require.NoError(t, err, "benchmark failed for %q:\n%s", tp.pattern, out)
 
 			t.Logf("pattern %q:\n%s", tp.pattern, out)
