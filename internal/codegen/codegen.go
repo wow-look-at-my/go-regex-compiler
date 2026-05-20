@@ -3,7 +3,6 @@ package codegen
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"io"
 	"strconv"
 	"unicode"
@@ -87,18 +86,8 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 		}
 	}
 
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		// If formatting fails, write unformatted so user can debug
-		_, werr := w.Write(buf.Bytes())
-		if werr != nil {
-			return werr
-		}
-		return fmt.Errorf("formatting generated code: %w", err)
-	}
-
-	_, err = w.Write(formatted)
-	return err
+	_, werr := w.Write(buf.Bytes())
+	return werr
 }
 
 func buildContext(d *dfa.DFA, opts Options) templateContext {
@@ -336,26 +325,18 @@ func stateTransition(s templateState, t templateTransition) string {
 	return fmt.Sprintf("state = %d", t.Next)
 }
 
-func byteCond(i int, t templateTransition) string {
-	keyword := "} else if "
-	if i == 0 {
-		keyword = "if "
-	}
+func byteCond(t templateTransition) string {
 	if t.Lo == t.Hi {
-		return fmt.Sprintf("%sc == %s {", keyword, quoteByte(t.Lo))
+		return fmt.Sprintf("case c == %s:", quoteByte(t.Lo))
 	}
-	return fmt.Sprintf("%sc >= %s && c <= %s {", keyword, quoteByte(t.Lo), quoteByte(t.Hi))
+	return fmt.Sprintf("case c >= %s && c <= %s:", quoteByte(t.Lo), quoteByte(t.Hi))
 }
 
-func runeCond(i int, t templateTransition) string {
-	keyword := "} else if "
-	if i == 0 {
-		keyword = "if "
-	}
+func runeCond(t templateTransition) string {
 	if t.Lo == t.Hi {
-		return fmt.Sprintf("%sr == %s {", keyword, quoteRune(t.Lo))
+		return fmt.Sprintf("case r == %s:", quoteRune(t.Lo))
 	}
-	return fmt.Sprintf("%sr >= %s && r <= %s {", keyword, quoteRune(t.Lo), quoteRune(t.Hi))
+	return fmt.Sprintf("case r >= %s && r <= %s:", quoteRune(t.Lo), quoteRune(t.Hi))
 }
 
 // isASCIIOnly returns true if all DFA transitions only involve runes <= 127.
