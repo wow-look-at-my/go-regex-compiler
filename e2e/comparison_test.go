@@ -11,13 +11,14 @@ import (
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
 	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 // testPatterns are the regex patterns used across correctness, benchmark, and size tests.
 var testPatterns = []struct {
-	name    string
-	pattern string
-	matchFn func(string) bool
+	name	string
+	pattern	string
+	matchFn	func(string) bool
 }{
 	{"literal", "abc", MatchLiteral},
 	{"char_class", "[a-z]+", MatchCharClass},
@@ -79,9 +80,8 @@ func TestCorrectnessVsRegexp(t *testing.T) {
 			for _, input := range testInputs {
 				expected := re.MatchString(input)
 				got := tp.matchFn(input)
-				if got != expected {
-					t.Errorf("Match(%q) = %v, want %v", input, got, expected)
-				}
+				assert.Equal(t, expected, got)
+
 			}
 		})
 	}
@@ -92,22 +92,19 @@ func TestCodeSize(t *testing.T) {
 	for _, tp := range testPatterns {
 		t.Run(tp.name, func(t *testing.T) {
 			prog, err := parser.Parse(tp.pattern)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.Nil(t, err)
+
 			d, err := dfa.Build(prog)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.Nil(t, err)
+
 			var buf bytes.Buffer
 			opts := codegen.Options{
-				PackageName: "test",
-				FuncName:    "Match",
-				Regex:       tp.pattern,
+				PackageName:	"test",
+				FuncName:	"Match",
+				Regex:		tp.pattern,
 			}
-			if err := codegen.Generate(&buf, d, opts); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, codegen.Generate(&buf, d, opts))
+
 			lines := bytes.Count(buf.Bytes(), []byte("\n"))
 			assert.NotEmpty(t, buf.Bytes(), "generated code should not be empty")
 			t.Logf("pattern=%-35s  bytes=%-6d  lines=%-4d", fmt.Sprintf("%q", tp.pattern), buf.Len(), lines)
