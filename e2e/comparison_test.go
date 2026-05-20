@@ -67,7 +67,7 @@ var testInputs = []string{
 	strings.Repeat("x", 1000),
 }
 
-// generate runs the regex-gen pipeline and returns the generated Go source code.
+// generate runs the go-regex-compiler pipeline and returns the generated Go source code.
 func generate(t *testing.T, pattern string) []byte {
 	t.Helper()
 	prog, err := parser.Parse(pattern)
