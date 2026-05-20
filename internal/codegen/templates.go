@@ -8,12 +8,14 @@ var funcMap = template.FuncMap{
 	"quoteRegex":      quoteRegex,
 	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":            func(args ...any) []any { return args },
-	"stateTransition": stateTransition,
-	"condFn": func(kind string, t templateTransition) string {
+	"stateTransition":       stateTransition,
+	"groupByteTransitions":  groupByteTransitions,
+	"groupRuneTransitions":  groupRuneTransitions,
+	"groupTransitions": func(kind string, s templateState) []groupedCase {
 		if kind == "byte" {
-			return transitionCond("c", quoteByte, t)
+			return groupByteTransitions(s)
 		}
-		return transitionCond("r", quoteRune, t)
+		return groupRuneTransitions(s)
 	},
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
@@ -53,10 +55,14 @@ const headerTemplate = `
 // Source regex: {{ quoteRegex .Regex }}
 
 package {{ .PackageName }}
+
+{{ if .HasRanges }}
+import "github.com/wow-look-at-my/go-regex-compiler/match"
+{{ end }}
 {{ if not .ASCII }}
 import "unicode/utf8"
 {{ end }}
-{{- end -}}
+{{ end -}}
 `
 
 // ---------- match function ----------
@@ -69,11 +75,11 @@ func {{ .FuncName }}(input string) bool {
 	return false
 {{- else if .EdgeCase }}
 {{ template "edgeCaseEmpty" . }}
-{{- else if eq .Mode "full" }}
+{{- else if eq .Mode "full" -}}
 {{ template "fullBody" . }}
-{{- else if eq .Mode "prefix" }}
+{{- else if eq .Mode "prefix" -}}
 {{ template "prefixBody" . }}
-{{- else if eq .Mode "contains" }}
+{{- else if eq .Mode "contains" -}}
 {{ template "containsBody" . }}
 {{- end }}
 }
@@ -95,14 +101,14 @@ const edgeCaseEmptyMatchTemplate = "" // placeholder for future use
 // ---------- full match body ----------
 
 const fullBodyTemplate = `
-{{- define "fullBody" -}}
+{{- define "fullBody" }}
 	state := {{ .Start }}
 {{- range chainIndices .NumChains }}
 	chainCount{{ . }} := 0
 {{- end }}
-{{- if .ASCII }}
+{{- if .ASCII -}}
 {{ template "asciiLoop" . }}
-{{- else }}
+{{- else -}}
 {{ template "utf8Loop" . }}
 {{- end }}
 {{ template "acceptCheck" . }}
@@ -112,14 +118,14 @@ const fullBodyTemplate = `
 // ---------- prefix body ----------
 
 const prefixBodyTemplate = `
-{{- define "prefixBody" -}}
+{{- define "prefixBody" }}
 	state := {{ .Start }}
 {{- range chainIndices .NumChains }}
 	chainCount{{ . }} := 0
 {{- end }}
-{{- if .ASCII }}
+{{- if .ASCII -}}
 {{ template "asciiLoopPrefix" . }}
-{{- else }}
+{{- else -}}
 {{ template "utf8LoopPrefix" . }}
 {{- end }}
 {{ template "acceptCheck" . }}
@@ -130,9 +136,9 @@ const prefixBodyTemplate = `
 
 const containsBodyTemplate = `
 {{- define "containsBody" -}}
-{{- if .ASCII }}
+{{- if .ASCII -}}
 {{ template "asciiContains" . }}
-{{- else }}
+{{- else -}}
 {{ template "utf8Contains" . }}
 {{- end }}
 {{- end -}}
@@ -141,7 +147,7 @@ const containsBodyTemplate = `
 // ---------- loops ----------
 
 const asciiLoopTemplate = `
-{{- define "asciiLoop" -}}
+{{- define "asciiLoop" }}
 	for i := 0; i < len(input); i++ {
 		c := input[i]
 		switch state {
@@ -154,7 +160,7 @@ const asciiLoopTemplate = `
 `
 
 const utf8LoopTemplate = `
-{{- define "utf8Loop" -}}
+{{- define "utf8Loop" }}
 	for i := 0; i < len(input); {
 		r, size := utf8.DecodeRuneInString(input[i:])
 		if r == utf8.RuneError && size == 1 {
@@ -171,7 +177,7 @@ const utf8LoopTemplate = `
 `
 
 const asciiLoopPrefixTemplate = `
-{{- define "asciiLoopPrefix" -}}
+{{- define "asciiLoopPrefix" }}
 	for i := 0; i < len(input); i++ {
 		c := input[i]
 		switch state {
@@ -185,7 +191,7 @@ done:
 `
 
 const utf8LoopPrefixTemplate = `
-{{- define "utf8LoopPrefix" -}}
+{{- define "utf8LoopPrefix" }}
 	for i := 0; i < len(input); {
 		r, size := utf8.DecodeRuneInString(input[i:])
 		if r == utf8.RuneError && size == 1 {
@@ -205,7 +211,7 @@ done:
 // ---------- contains loops ----------
 
 const asciiContainsTemplate = `
-{{- define "asciiContains" -}}
+{{- define "asciiContains" }}
 {{- if .StartAccepts }}
 	return true
 {{- else }}
@@ -242,7 +248,7 @@ const asciiContainsTemplate = `
 `
 
 const utf8ContainsTemplate = `
-{{- define "utf8Contains" -}}
+{{- define "utf8Contains" }}
 {{- if .StartAccepts }}
 	return true
 {{- else }}
@@ -303,15 +309,12 @@ const statesTemplate = `
 {{- $condKind := index . 1 -}}
 {{- $noMatch := index . 2 -}}
 {{- range $ctx.States }}{{ if isLive . }}
-{{- $s := . }}
 		case {{ .ID }}:
 			switch {
-{{- range .Transitions }}
-			{{ condFn $condKind . }}
-				{{ stateTransition $s . }}
+{{- range groupTransitions $condKind . }}
+			case {{ .Cond }}: {{ .Body }}
 {{- end }}
-			default:
-				{{ $noMatch }}
+			default: {{ $noMatch }}
 			}
 {{- end }}{{ end }}
 {{- end -}}
@@ -324,15 +327,12 @@ const statesContainsTemplate = `
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
-{{- $s := . }}
 			case {{ .ID }}:
 				switch {
-{{- range .Transitions }}
-				{{ condFn $condKind . }}
-					{{ stateTransition $s . }}
+{{- range groupTransitions $condKind . }}
+				case {{ .Cond }}: {{ .Body }}
 {{- end }}
-				default:
-					dead = true
+				default: dead = true
 				}
 {{- end }}{{ end }}
 {{- end -}}

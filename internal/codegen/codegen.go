@@ -3,7 +3,6 @@ package codegen
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"io"
 	"strconv"
 	"unicode"
@@ -47,6 +46,7 @@ type templateContext struct {
 	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
 	StartAccepts bool // start state is accepting (for contains early-return)
 	NumChains    int
+	HasRanges    bool
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -87,18 +87,8 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 		}
 	}
 
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		// If formatting fails, write unformatted so user can debug
-		_, werr := w.Write(buf.Bytes())
-		if werr != nil {
-			return werr
-		}
-		return fmt.Errorf("formatting generated code: %w", err)
-	}
-
-	_, err = w.Write(formatted)
-	return err
+	_, werr := w.Write(buf.Bytes())
+	return werr
 }
 
 func buildContext(d *dfa.DFA, opts Options) templateContext {
@@ -148,6 +138,18 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	compressChains(&ctx)
+
+	for _, s := range ctx.States {
+		for _, t := range s.Transitions {
+			if t.Lo != t.Hi {
+				ctx.HasRanges = true
+				break
+			}
+		}
+		if ctx.HasRanges {
+			break
+		}
+	}
 
 	return ctx
 }
@@ -330,17 +332,50 @@ func quoteRegex(s string) string {
 
 func stateTransition(s templateState, t templateTransition) string {
 	if s.IsChain {
-		return fmt.Sprintf("if chainCount%d >= %d {\nstate = %d\n} else {\nchainCount%d++\n}",
+		return fmt.Sprintf("if chainCount%d >= %d { state = %d } else { chainCount%d++ }",
 			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
 	}
 	return fmt.Sprintf("state = %d", t.Next)
 }
 
-func transitionCond(varName string, quoteFn func(rune) string, t templateTransition) string {
-	if t.Lo == t.Hi {
-		return fmt.Sprintf("case %s == %s:", varName, quoteFn(t.Lo))
+type groupedCase struct {
+	Cond string
+	Body string
+}
+
+func groupByteTransitions(s templateState) []groupedCase {
+	return groupTransitions(s, func(t templateTransition) string {
+		if t.Lo == t.Hi {
+			return fmt.Sprintf("c == %s", quoteByte(t.Lo))
+		}
+		return fmt.Sprintf("match.InRange(c, %s, %s)", quoteByte(t.Lo), quoteByte(t.Hi))
+	})
+}
+
+func groupRuneTransitions(s templateState) []groupedCase {
+	return groupTransitions(s, func(t templateTransition) string {
+		if t.Lo == t.Hi {
+			return fmt.Sprintf("r == %s", quoteRune(t.Lo))
+		}
+		return fmt.Sprintf("match.InRange(r, %s, %s)", quoteRune(t.Lo), quoteRune(t.Hi))
+	})
+}
+
+func groupTransitions(s templateState, condFn func(templateTransition) string) []groupedCase {
+	var groups []groupedCase
+	i := 0
+	for i < len(s.Transitions) {
+		body := stateTransition(s, s.Transitions[i])
+		conds := condFn(s.Transitions[i])
+		j := i + 1
+		for j < len(s.Transitions) && stateTransition(s, s.Transitions[j]) == body {
+			conds += ", " + condFn(s.Transitions[j])
+			j++
+		}
+		groups = append(groups, groupedCase{Cond: conds, Body: body})
+		i = j
 	}
-	return fmt.Sprintf("case %s >= %s && %s <= %s:", varName, quoteFn(t.Lo), varName, quoteFn(t.Hi))
+	return groups
 }
 
 // isASCIIOnly returns true if all DFA transitions only involve runes <= 127.
