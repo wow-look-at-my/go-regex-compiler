@@ -336,18 +336,11 @@ func stateTransition(s templateState, t templateTransition) string {
 	return fmt.Sprintf("state = %d", t.Next)
 }
 
-func byteCond(t templateTransition) string {
+func transitionCond(varName string, quoteFn func(rune) string, t templateTransition) string {
 	if t.Lo == t.Hi {
-		return fmt.Sprintf("case c == %s:", quoteByte(t.Lo))
+		return fmt.Sprintf("case %s == %s:", varName, quoteFn(t.Lo))
 	}
-	return fmt.Sprintf("case c >= %s && c <= %s:", quoteByte(t.Lo), quoteByte(t.Hi))
-}
-
-func runeCond(t templateTransition) string {
-	if t.Lo == t.Hi {
-		return fmt.Sprintf("case r == %s:", quoteRune(t.Lo))
-	}
-	return fmt.Sprintf("case r >= %s && r <= %s:", quoteRune(t.Lo), quoteRune(t.Hi))
+	return fmt.Sprintf("case %s >= %s && %s <= %s:", varName, quoteFn(t.Lo), varName, quoteFn(t.Hi))
 }
 
 // isASCIIOnly returns true if all DFA transitions only involve runes <= 127.
