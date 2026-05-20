@@ -325,25 +325,44 @@ func stateTransition(s templateState, t templateTransition) string {
 	return fmt.Sprintf("state = %d", t.Next)
 }
 
-func shouldFallthrough(s templateState, i int) bool {
-	if i >= len(s.Transitions)-1 {
-		return false
-	}
-	return stateTransition(s, s.Transitions[i]) == stateTransition(s, s.Transitions[i+1])
+type groupedCase struct {
+	Cond string
+	Body string
 }
 
-func byteCond(t templateTransition) string {
-	if t.Lo == t.Hi {
-		return fmt.Sprintf("case c == %s:", quoteByte(t.Lo))
-	}
-	return fmt.Sprintf("case c >= %s && c <= %s:", quoteByte(t.Lo), quoteByte(t.Hi))
+func groupByteTransitions(s templateState) []groupedCase {
+	return groupTransitions(s, func(t templateTransition) string {
+		if t.Lo == t.Hi {
+			return fmt.Sprintf("c == %s", quoteByte(t.Lo))
+		}
+		return fmt.Sprintf("inRange(c, %s, %s)", quoteByte(t.Lo), quoteByte(t.Hi))
+	})
 }
 
-func runeCond(t templateTransition) string {
-	if t.Lo == t.Hi {
-		return fmt.Sprintf("case r == %s:", quoteRune(t.Lo))
+func groupRuneTransitions(s templateState) []groupedCase {
+	return groupTransitions(s, func(t templateTransition) string {
+		if t.Lo == t.Hi {
+			return fmt.Sprintf("r == %s", quoteRune(t.Lo))
+		}
+		return fmt.Sprintf("inRange(r, %s, %s)", quoteRune(t.Lo), quoteRune(t.Hi))
+	})
+}
+
+func groupTransitions(s templateState, condFn func(templateTransition) string) []groupedCase {
+	var groups []groupedCase
+	i := 0
+	for i < len(s.Transitions) {
+		body := stateTransition(s, s.Transitions[i])
+		conds := condFn(s.Transitions[i])
+		j := i + 1
+		for j < len(s.Transitions) && stateTransition(s, s.Transitions[j]) == body {
+			conds += ", " + condFn(s.Transitions[j])
+			j++
+		}
+		groups = append(groups, groupedCase{Cond: conds, Body: body})
+		i = j
 	}
-	return fmt.Sprintf("case r >= %s && r <= %s:", quoteRune(t.Lo), quoteRune(t.Hi))
+	return groups
 }
 
 // isASCIIOnly returns true if all DFA transitions only involve runes <= 127.

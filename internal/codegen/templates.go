@@ -8,10 +8,9 @@ var funcMap = template.FuncMap{
 	"quoteRegex":      quoteRegex,
 	"isLive":          func(s templateState) bool { return len(s.Transitions) > 0 || s.Accept },
 	"args":            func(args ...any) []any { return args },
-	"stateTransition":  stateTransition,
-	"byteCond":         byteCond,
-	"runeCond":         runeCond,
-	"shouldFallthrough": shouldFallthrough,
+	"stateTransition":       stateTransition,
+	"groupByteTransitions":  groupByteTransitions,
+	"groupRuneTransitions":  groupRuneTransitions,
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
 		for i := range indices {
@@ -55,7 +54,9 @@ package {{ .PackageName }}
 {{ if not .ASCII }}
 import "unicode/utf8"
 {{ end }}
-{{- end -}}
+func inRange[T byte | rune](c, lo, hi T) bool { return c >= lo && c <= hi }
+
+{{ end -}}
 `
 
 // ---------- match function ----------
@@ -299,11 +300,10 @@ const statesASCIITemplate = `
 {{- $ctx := index . 0 -}}
 {{- $noMatch := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
-{{- $s := . }}
 		case {{ .ID }}:
 			switch {
-{{- range $i, $t := .Transitions }}
-			{{ byteCond $t }}{{ if shouldFallthrough $s $i }} fallthrough{{ else }} {{ stateTransition $s $t }}{{ end }}
+{{- range groupByteTransitions . }}
+			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ $noMatch }}
 			}
@@ -318,11 +318,10 @@ const statesRuneTemplate = `
 {{- $ctx := index . 0 -}}
 {{- $noMatch := index . 1 -}}
 {{- range $ctx.States }}{{ if isLive . }}
-{{- $s := . }}
 		case {{ .ID }}:
 			switch {
-{{- range $i, $t := .Transitions }}
-			{{ runeCond $t }}{{ if shouldFallthrough $s $i }} fallthrough{{ else }} {{ stateTransition $s $t }}{{ end }}
+{{- range groupRuneTransitions . }}
+			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ $noMatch }}
 			}
@@ -333,11 +332,10 @@ const statesRuneTemplate = `
 const statesASCIIContainsTemplate = `
 {{- define "statesASCIIContains" -}}
 {{- range .States }}{{ if isLive . }}
-{{- $s := . }}
 			case {{ .ID }}:
 				switch {
-{{- range $i, $t := .Transitions }}
-				{{ byteCond $t }}{{ if shouldFallthrough $s $i }} fallthrough{{ else }} {{ stateTransition $s $t }}{{ end }}
+{{- range groupByteTransitions . }}
+				case {{ .Cond }}: {{ .Body }}
 {{- end }}
 				default: dead = true
 				}
@@ -348,11 +346,10 @@ const statesASCIIContainsTemplate = `
 const statesRuneContainsTemplate = `
 {{- define "statesRuneContains" -}}
 {{- range .States }}{{ if isLive . }}
-{{- $s := . }}
 			case {{ .ID }}:
 				switch {
-{{- range $i, $t := .Transitions }}
-				{{ runeCond $t }}{{ if shouldFallthrough $s $i }} fallthrough{{ else }} {{ stateTransition $s $t }}{{ end }}
+{{- range groupRuneTransitions . }}
+				case {{ .Cond }}: {{ .Body }}
 {{- end }}
 				default: dead = true
 				}
