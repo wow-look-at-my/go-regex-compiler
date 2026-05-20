@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wow-look-at-my/go-regex-compiler/e2e"
+	. "github.com/wow-look-at-my/go-regex-compiler/e2e"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
@@ -43,11 +43,11 @@ var generatedBenchPatterns = []struct {
 	matchInput string
 	noMatch    string
 }{
-	{"char_class", `[a-z]+`, e2e.MatchCharClass, "hello", "12345"},
-	{"ssn", `\d{3}-\d{2}-\d{4}`, e2e.MatchSSN, "123-45-6789", "abc-de-fghi"},
-	{"identifier", `[A-Za-z_][A-Za-z0-9_]*`, e2e.MatchIdentifier, "camelCase123", "-dash"},
-	{"url", `(https?://)?[a-z]+\.[a-z]{2,}`, e2e.MatchURL, "https://example.com", "12345"},
-	{"case_insensitive", `(?i)hello`, e2e.MatchCaseInsensitive, "HeLLo", "world"},
+	{"char_class", `[a-z]+`, MatchCharClass, "hello", "12345"},
+	{"ssn", `\d{3}-\d{2}-\d{4}`, MatchSSN, "123-45-6789", "abc-de-fghi"},
+	{"identifier", `[A-Za-z_][A-Za-z0-9_]*`, MatchIdentifier, "camelCase123", "-dash"},
+	{"url", `(https?://)?[a-z]+\.[a-z]{2,}`, MatchURL, "https://example.com", "12345"},
+	{"case_insensitive", `(?i)hello`, MatchCaseInsensitive, "HeLLo", "world"},
 }
 
 func BenchmarkGenerated(b *testing.B) {
