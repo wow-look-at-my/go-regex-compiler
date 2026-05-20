@@ -300,6 +300,7 @@ const statesASCIITemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
+{{- if .Transitions }}
 			switch {
 {{- range .Transitions }}
 			{{ byteCond . }}
@@ -308,6 +309,9 @@ const statesASCIITemplate = `
 			default:
 				{{ $noMatch }}
 			}
+{{- else }}
+			{{ $noMatch }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -321,6 +325,7 @@ const statesRuneTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 {{- $s := . }}
 		case {{ .ID }}:
+{{- if .Transitions }}
 			switch {
 {{- range .Transitions }}
 			{{ runeCond . }}
@@ -329,6 +334,9 @@ const statesRuneTemplate = `
 			default:
 				{{ $noMatch }}
 			}
+{{- else }}
+			{{ $noMatch }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -338,6 +346,7 @@ const statesASCIIContainsTemplate = `
 {{- range .States }}{{ if isLive . }}
 {{- $s := . }}
 			case {{ .ID }}:
+{{- if .Transitions }}
 				switch {
 {{- range .Transitions }}
 				{{ byteCond . }}
@@ -346,6 +355,9 @@ const statesASCIIContainsTemplate = `
 				default:
 					dead = true
 				}
+{{- else }}
+				dead = true
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -355,6 +367,7 @@ const statesRuneContainsTemplate = `
 {{- range .States }}{{ if isLive . }}
 {{- $s := . }}
 			case {{ .ID }}:
+{{- if .Transitions }}
 				switch {
 {{- range .Transitions }}
 				{{ runeCond . }}
@@ -363,6 +376,9 @@ const statesRuneContainsTemplate = `
 				default:
 					dead = true
 				}
+{{- else }}
+				dead = true
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
