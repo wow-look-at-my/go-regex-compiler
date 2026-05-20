@@ -14,4 +14,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1
         with:
-          generate: 0400d69ae8b2
+          generate: 44e1d2620691
