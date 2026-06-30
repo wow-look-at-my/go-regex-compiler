@@ -7,18 +7,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
 )
 
 // testPatterns are the regex patterns used across correctness, benchmark, and size tests.
 var testPatterns = []struct {
-	name	string
-	pattern	string
-	matchFn	func(string) bool
+	name    string
+	pattern string
+	matchFn func(string) bool
 }{
 	{"literal", "abc", MatchLiteral},
 	{"char_class", "[a-z]+", MatchCharClass},
@@ -99,9 +99,9 @@ func TestCodeSize(t *testing.T) {
 
 			var buf bytes.Buffer
 			opts := codegen.Options{
-				PackageName:	"test",
-				FuncName:	"Match",
-				Regex:		tp.pattern,
+				PackageName: "test",
+				FuncName:    "Match",
+				Regex:       tp.pattern,
 			}
 			require.NoError(t, codegen.Generate(&buf, d, opts))
 
@@ -164,6 +164,62 @@ func BenchmarkVsRegexp(b *testing.B) {
 		b.Run(tp.name+"/regexp_long", func(b *testing.B) {
 			for b.Loop() {
 				re.MatchString(longInput)
+			}
+		})
+	}
+}
+
+// BenchmarkSubmatchVsRegexp compares generated submatch extraction against
+// regexp.FindStringSubmatch and FindStringSubmatchIndex over representative
+// patterns, including a realistic Apache access-log line.
+func BenchmarkSubmatchVsRegexp(b *testing.B) {
+	cases := []struct {
+		name    string
+		pattern string
+		findFn  func(string) []string
+		indexFn func(string) []int
+		input   string
+	}{
+		{
+			"rfc3339",
+			`(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2}):(?P<min>\d{2}):(?P<sec>\d{2})Z`,
+			FindRFC, FindRFCIndex, "2020-01-02T03:04:05Z",
+		},
+		{
+			"apache",
+			`(?P<ip>\d+\.\d+\.\d+\.\d+) - - \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>[^ ]+) (?P<proto>[^"]+)" (?P<status>\d{3}) (?P<size>\d+)`,
+			FindApache, FindApacheIndex,
+			`127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326`,
+		},
+		{
+			"logfmt",
+			`(?P<key>\w+)="(?P<val>[^"]*)"`,
+			FindLogfmt, FindLogfmtIndex, `name="quoted value"`,
+		},
+	}
+	for _, c := range cases {
+		re := anchoredRegexp(c.pattern)
+		find := c.findFn
+		idx := c.indexFn
+		in := c.input
+		b.Run(c.name+"/generated_submatch", func(b *testing.B) {
+			for b.Loop() {
+				find(in)
+			}
+		})
+		b.Run(c.name+"/regexp_submatch", func(b *testing.B) {
+			for b.Loop() {
+				re.FindStringSubmatch(in)
+			}
+		})
+		b.Run(c.name+"/generated_index", func(b *testing.B) {
+			for b.Loop() {
+				idx(in)
+			}
+		})
+		b.Run(c.name+"/regexp_index", func(b *testing.B) {
+			for b.Loop() {
+				re.FindStringSubmatchIndex(in)
 			}
 		})
 	}

@@ -30,9 +30,9 @@ func generateCode(t *testing.T, pattern, pkg, funcName string) string {
 	d := buildDFA(t, pattern)
 	var buf bytes.Buffer
 	opts := Options{
-		PackageName:	pkg,
-		FuncName:	funcName,
-		Regex:		pattern,
+		PackageName: pkg,
+		FuncName:    funcName,
+		Regex:       pattern,
 	}
 	err := Generate(&buf, d, opts)
 	require.NoError(t, err)
@@ -108,8 +108,8 @@ func TestIsASCIIOnly(t *testing.T) {
 
 func TestGenerateFuncName(t *testing.T) {
 	tests := []struct {
-		funcName	string
-		pattern		string
+		funcName string
+		pattern  string
 	}{
 		{"MatchEmail", `[a-z]+@[a-z]+\.[a-z]+`},
 		{"IsValid", `[0-9]+`},
@@ -138,10 +138,10 @@ func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) st
 	d := buildDFA(t, pattern)
 	var buf bytes.Buffer
 	opts := Options{
-		PackageName:	"testpkg",
-		FuncName:	funcName,
-		Regex:		pattern,
-		Mode:		mode,
+		PackageName: "testpkg",
+		FuncName:    funcName,
+		Regex:       pattern,
+		Mode:        mode,
 	}
 	err := Generate(&buf, d, opts)
 	require.NoError(t, err)
@@ -194,8 +194,8 @@ func TestGenerateContainsModeUnicode(t *testing.T) {
 
 func TestGenerateSubmatch(t *testing.T) {
 	patterns := []struct {
-		name	string
-		pattern	string
+		name    string
+		pattern string
 	}{
 		{"simple_groups", `([a-z]+)@([a-z]+)`},
 		{"ssn", `(\d{3})-(\d{2})-(\d{4})`},
@@ -218,15 +218,15 @@ func TestGenerateSubmatch(t *testing.T) {
 
 			var buf bytes.Buffer
 			opts := Options{
-				PackageName:	"testpkg",
-				FuncName:	"Match",
-				Regex:		tt.pattern,
+				PackageName: "testpkg",
+				FuncName:    "Match",
+				Regex:       tt.pattern,
 				Submatch: &SubmatchOptions{
-					FuncName:	"FindSubmatch",
-					MatchFunc:	"Match",
-					Regex:		tt.pattern,
-					Prog:		prog,
-					NumGroups:	numGroups,
+					FuncName:  "FindSubmatch",
+					MatchFunc: "Match",
+					Regex:     tt.pattern,
+					Prog:      prog,
+					NumGroups: numGroups,
 				},
 			}
 			err = Generate(&buf, d, opts)
@@ -243,6 +243,125 @@ func TestGenerateSubmatch(t *testing.T) {
 	}
 }
 
+// generateNamedSubmatch builds a full submatch family (positional, index,
+// names, optional struct) for a pattern and returns the generated source.
+func generateNamedSubmatch(t *testing.T, pattern string, withStruct bool) string {
+	t.Helper()
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	require.NoError(t, err)
+	names := make([]string, countGroups(re)+1)
+	collectNames(re, names)
+	re2 := re.Simplify()
+	prog, err := syntax.Compile(re2)
+	require.NoError(t, err)
+	d, err := dfa.Build(prog)
+	require.NoError(t, err)
+
+	sub := &SubmatchOptions{
+		FuncName:      "FindSub",
+		MatchFunc:     "Match",
+		Regex:         pattern,
+		Prog:          prog,
+		NumGroups:     countGroups(re),
+		GroupNames:    names,
+		NamesFuncName: "SubexpNames",
+	}
+	if withStruct {
+		sub.StructEnabled = true
+		sub.StructType = "Captures"
+		sub.StructFunc = "FindCaptures"
+	}
+	var buf bytes.Buffer
+	require.NoError(t, Generate(&buf, d, Options{
+		PackageName: "testpkg",
+		FuncName:    "Match",
+		Regex:       pattern,
+		Submatch:    sub,
+	}))
+	return buf.String()
+}
+
+func collectNames(re *syntax.Regexp, names []string) {
+	if re.Op == syntax.OpCapture && re.Cap >= 0 && re.Cap < len(names) {
+		names[re.Cap] = re.Name
+	}
+	for _, sub := range re.Sub {
+		collectNames(sub, names)
+	}
+}
+
+func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
+	out := generateNamedSubmatch(t, `(?P<year>\d{4})-(?P<month>\d{2})`, true)
+	assertValidGo(t, out)
+
+	// Core index function + positional wrapper + names accessor.
+	assert.Contains(t, out, "func FindSubIndex(input string) []int")
+	assert.Contains(t, out, "func FindSub(input string) []string")
+	assert.Contains(t, out, "func SubexpNames() []string")
+	assert.Contains(t, out, `return []string{"", "year", "month"}`)
+
+	// Typed struct + constructor with exported fields.
+	assert.Contains(t, out, "type Captures struct")
+	assert.Contains(t, out, "Year string")
+	assert.Contains(t, out, "Month string")
+	assert.Contains(t, out, "Matched bool")
+	assert.Contains(t, out, "func FindCaptures(input string) Captures")
+
+	// Empty-width assertion machinery is present in the core.
+	assert.Contains(t, out, "emptyOpsAt")
+	assert.Contains(t, out, "emptyWordBoundary")
+}
+
+func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {
+	// A pattern with NO named groups must not emit struct/constructor machinery
+	// even with the struct enabled (HasNamedGroups gate), and must have no
+	// unused imports.
+	out := generateNamedSubmatch(t, `(\d{4})-(\d{2})`, true)
+	assertValidGo(t, out)
+
+	assert.NotContains(t, out, "type Captures struct")
+	assert.NotContains(t, out, "func FindCaptures")
+	// Names accessor is still emitted (all entries empty).
+	assert.Contains(t, out, "func SubexpNames() []string")
+	assert.Contains(t, out, `return []string{"", "", ""}`)
+
+	// No unused imports: this ASCII pattern needs neither unicode/utf8 nor any
+	// new package introduced by the submatch additions. Verify the file builds
+	// and that go/format does not report an import-related problem by parsing it.
+	assertNoUnusedImports(t, out)
+}
+
+// assertNoUnusedImports parses the file and checks that every imported package
+// (other than blank/dot imports) is referenced, catching a stray import the
+// templates might leak.
+func assertNoUnusedImports(t *testing.T, code string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "generated.go", code, parser.ImportsOnly)
+	require.NoError(t, err)
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		// Derive the default package identifier (last path element).
+		parts := strings.Split(path, "/")
+		ident := parts[len(parts)-1]
+		if imp.Name != nil {
+			ident = imp.Name.Name
+		}
+		if ident == "_" || ident == "." {
+			continue
+		}
+		assert.Contains(t, code, ident+".", "import %q appears unused in generated code:\n%s", path, code)
+	}
+}
+
+func TestGenerateSubmatchNamesParity(t *testing.T) {
+	// The generated SubexpNames slice literal must list the same names regexp
+	// would report (verified structurally; e2e tests verify at runtime).
+	out := generateNamedSubmatch(t, `(?P<a>x)(y)(?P<b>z)`, false)
+	assertValidGo(t, out)
+	assert.Contains(t, out, `return []string{"", "a", "", "b"}`)
+}
+
 // countGroups counts capture groups in a parsed regex.
 func countGroups(re *syntax.Regexp) int {
 	n := 0
@@ -257,8 +376,8 @@ func countGroups(re *syntax.Regexp) int {
 
 func TestInstOpName(t *testing.T) {
 	tests := []struct {
-		op	syntax.InstOp
-		want	string
+		op   syntax.InstOp
+		want string
 	}{
 		{syntax.InstRune, "opRune"},
 		{syntax.InstRune1, "opRune1"},
@@ -292,17 +411,17 @@ func TestBuildSubmatchContext(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := buildSubmatchContext(SubmatchOptions{
-		FuncName:	"FindSubmatch",
-		MatchFunc:	"Match",
-		Regex:		`([a-z]+)@([a-z]+)`,
-		Prog:		prog,
-		NumGroups:	2,
+		FuncName:  "FindSubmatch",
+		MatchFunc: "Match",
+		Regex:     `([a-z]+)@([a-z]+)`,
+		Prog:      prog,
+		NumGroups: 2,
 	})
 
 	assert.Equal(t, "FindSubmatch", ctx.FuncName)
 	assert.Equal(t, "Match", ctx.MatchFunc)
-	assert.Equal(t, 6, ctx.NumSlots)	// (2+1)*2
-	assert.Equal(t, 3, ctx.NumGroups)	// 6/2
+	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
+	assert.Equal(t, 3, ctx.NumGroups) // 6/2
 	assert.Equal(t, prog.Start, ctx.StartPC)
 	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 
@@ -332,9 +451,9 @@ func TestGenerateEmptyStates(t *testing.T) {
 	d := &dfa.DFA{States: nil, Start: 0}
 	var buf bytes.Buffer
 	err := Generate(&buf, d, Options{
-		PackageName:	"testpkg",
-		FuncName:	"Match",
-		Regex:		"impossible",
+		PackageName: "testpkg",
+		FuncName:    "Match",
+		Regex:       "impossible",
 	})
 	require.NoError(t, err)
 	output := buf.String()

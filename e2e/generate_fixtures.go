@@ -21,6 +21,42 @@ type fixture struct {
 	subFunc  string
 }
 
+// namedFixture drives generation of named-capture submatch fixtures: the
+// positional family (Find/FindIndex), the SubexpNames accessor, and the typed
+// capture struct. Used by the differential parity test in submatch_parity_test.go.
+type namedFixture struct {
+	file       string
+	regex      string
+	funcName   string // bool matcher name
+	subFunc    string // positional submatch func (also generates <subFunc>Index)
+	namesFunc  string // SubexpNames accessor
+	structType string // typed capture struct type ("" => no struct)
+	structFunc string // typed capture struct constructor
+}
+
+// namedFixtures is the corpus exercised by the parity test. It MUST include
+// named groups, optional, alternation, nested, last-iteration-wins repetition,
+// non-capturing, zero-width, and realistic log patterns (apache access line,
+// RFC3339 timestamp, logfmt field).
+var namedFixtures = []namedFixture{
+	{"gen_named_ym.go", `(?P<y>\d{2})(?P<m>\d{2})`, "MatchYM", "FindYM", "NamesYM", "YM", "FindYMStruct"},
+	{"gen_named_optional.go", `(a)?b`, "MatchOpt", "FindOpt", "NamesOpt", "", ""},
+	{"gen_named_alt.go", `(a|b)c`, "MatchAlt2", "FindAlt2", "NamesAlt2", "", ""},
+	{"gen_named_nested.go", `((a)(b))`, "MatchNest", "FindNest", "NamesNest", "", ""},
+	{"gen_named_lastwins.go", `(ab)+`, "MatchLast", "FindLast", "NamesLast", "", ""},
+	{"gen_named_noncap.go", `(?:ab)(c)`, "MatchNoncap", "FindNoncap", "NamesNoncap", "", ""},
+	{"gen_named_zerowidth.go", `(\babc)`, "MatchZW", "FindZW", "NamesZW", "", ""},
+	{"gen_named_wordb.go", `(\w+)\b`, "MatchWB", "FindWB", "NamesWB", "", ""},
+	{"gen_named_apache.go",
+		`(?P<ip>\d+\.\d+\.\d+\.\d+) - - \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>[^ ]+) (?P<proto>[^"]+)" (?P<status>\d{3}) (?P<size>\d+)`,
+		"MatchApache", "FindApache", "NamesApache", "ApacheLine", "FindApacheLine"},
+	{"gen_named_rfc3339.go",
+		`(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2}):(?P<min>\d{2}):(?P<sec>\d{2})Z`,
+		"MatchRFC", "FindRFC", "NamesRFC", "RFC3339", "FindRFC3339"},
+	{"gen_named_logfmt.go", `(?P<key>\w+)="(?P<val>[^"]*)"`, "MatchLogfmt", "FindLogfmt", "NamesLogfmt", "LogfmtField", "FindLogfmtField"},
+	{"gen_named_opt2.go", `(?P<a>x)?(?P<b>y)`, "MatchOpt2", "FindOpt2", "NamesOpt2", "Opt2", "FindOpt2Struct"},
+}
+
 var fixtures = []fixture{
 	// Full mode — testPatterns (used by correctness, benchmark, and size tests)
 	{"gen_full_literal.go", "abc", "MatchLiteral", codegen.MatchFull, false, ""},
@@ -80,6 +116,50 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	for _, f := range namedFixtures {
+		if err := generateNamed(f); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", f.file, err)
+			os.Exit(1)
+		}
+	}
+}
+
+func generateNamed(f namedFixture) error {
+	result, err := parser.ParseResult(f.regex)
+	if err != nil {
+		return fmt.Errorf("parse %q: %w", f.regex, err)
+	}
+	d, err := dfa.Build(result.Prog)
+	if err != nil {
+		return fmt.Errorf("dfa %q: %w", f.regex, err)
+	}
+	sub := &codegen.SubmatchOptions{
+		PackageName:   "e2e",
+		FuncName:      f.subFunc,
+		MatchFunc:     f.funcName,
+		Regex:         f.regex,
+		Prog:          result.Prog,
+		NumGroups:     result.NumGroups,
+		GroupNames:    result.GroupNames,
+		NamesFuncName: f.namesFunc,
+	}
+	if f.structType != "" {
+		sub.StructEnabled = true
+		sub.StructType = f.structType
+		sub.StructFunc = f.structFunc
+	}
+	var buf bytes.Buffer
+	opts := codegen.Options{
+		PackageName: "e2e",
+		FuncName:    f.funcName,
+		Regex:       f.regex,
+		Mode:        codegen.MatchFull,
+		Submatch:    sub,
+	}
+	if err := codegen.Generate(&buf, d, opts); err != nil {
+		return fmt.Errorf("codegen %q: %w", f.regex, err)
+	}
+	return os.WriteFile(f.file, buf.Bytes(), 0644)
 }
 
 func generate(f fixture) error {
@@ -135,6 +215,10 @@ func generateSubmatch(f fixture) error {
 			Regex:       f.regex,
 			Prog:        result.Prog,
 			NumGroups:   result.NumGroups,
+			GroupNames:  result.GroupNames,
+			// Unique per-fixture names accessor to avoid SubexpNames collisions
+			// across fixtures sharing the e2e package.
+			NamesFuncName: f.subFunc + "Names",
 		}
 	}
 	err = codegen.Generate(&buf, d, opts)
