@@ -24,29 +24,29 @@ const (
 
 // Options controls the generated code.
 type Options struct {
-	PackageName string         // Go package name
-	FuncName    string         // Name of the generated match function
-	Regex       string         // Original regex (for comment)
-	Mode        MatchMode      // Match mode (default: MatchFull)
+	PackageName string           // Go package name
+	FuncName    string           // Name of the generated match function
+	Regex       string           // Original regex (for comment)
+	Mode        MatchMode        // Match mode (default: MatchFull)
 	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
 }
 
 // templateContext holds all data needed by the top-level templates.
 type templateContext struct {
-	PackageName string
-	FuncName    string
-	Regex       string
-	ModeComment string
-	Mode        string // "full", "prefix", "contains"
-	ASCII       bool
-	Start       int
-	States      []templateState
-	AcceptIDs   []int
-	EdgeCase        bool // single accepting state with no transitions
+	PackageName        string
+	FuncName           string
+	Regex              string
+	ModeComment        string
+	Mode               string // "full", "prefix", "contains"
+	ASCII              bool
+	Start              int
+	States             []templateState
+	AcceptIDs          []int
+	EdgeCase           bool // single accepting state with no transitions
 	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts bool // start state is accepting (for contains early-return)
-	NumChains    int
-	HasRanges    bool
+	StartAccepts       bool // start state is accepting (for contains early-return)
+	NumChains          int
+	HasRanges          bool
 }
 
 // templateState mirrors dfa.State for use in templates.

@@ -578,8 +578,9 @@ const nfaSimTemplate = `
 	// Decode the input into runes once (range over a string decodes UTF-8
 	// natively, so no unicode/utf8 import is needed). runes[k] is the k-th rune
 	// and offs[k] its starting byte offset; offs[len(runes)] == len(input).
-	var runes []rune
-	var offs []int
+	// len(input) is a safe upper bound on the rune count, so preallocate both.
+	runes := make([]rune, 0, len(input))
+	offs := make([]int, 0, len(input)+1)
 	for i, r := range input {
 		runes = append(runes, r)
 		offs = append(offs, i)

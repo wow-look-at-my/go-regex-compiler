@@ -1,24 +1,24 @@
 package e2e
 
 import (
+	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
-	"github.com/wow-look-at-my/testify/assert"
 )
 
 type testCase struct {
-	input	string
-	match	bool
+	input string
+	match bool
 }
 
 func TestIntegration(t *testing.T) {
 	tests := []struct {
-		name	string
-		matchFn	func(string) bool
-		cases	[]testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			name:	"abc", matchFn: MatchLiteral,
+			name: "abc", matchFn: MatchLiteral,
 			cases: []testCase{
 				{"abc", true},
 				{"", false},
@@ -29,7 +29,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"[a-z]+", matchFn: MatchCharClass,
+			name: "[a-z]+", matchFn: MatchCharClass,
 			cases: []testCase{
 				{"hello", true},
 				{"a", true},
@@ -41,7 +41,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"a*", matchFn: MatchAStar,
+			name: "a*", matchFn: MatchAStar,
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -51,7 +51,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"a+", matchFn: MatchAPlus,
+			name: "a+", matchFn: MatchAPlus,
 			cases: []testCase{
 				{"a", true},
 				{"aaa", true},
@@ -61,7 +61,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"a?", matchFn: MatchAQuestion,
+			name: "a?", matchFn: MatchAQuestion,
 			cases: []testCase{
 				{"", true},
 				{"a", true},
@@ -70,7 +70,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"a|b", matchFn: MatchAOrB,
+			name: "a|b", matchFn: MatchAOrB,
 			cases: []testCase{
 				{"a", true},
 				{"b", true},
@@ -80,7 +80,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"(a|b)*c", matchFn: MatchAltStarC,
+			name: "(a|b)*c", matchFn: MatchAltStarC,
 			cases: []testCase{
 				{"c", true},
 				{"ac", true},
@@ -94,7 +94,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`\d{3}-\d{2}-\d{4}`, matchFn: MatchSSN,
+			name: `\d{3}-\d{2}-\d{4}`, matchFn: MatchSSN,
 			cases: []testCase{
 				{"123-45-6789", true},
 				{"000-00-0000", true},
@@ -105,7 +105,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`[A-Za-z_][A-Za-z0-9_]*`, matchFn: MatchIdentifier,
+			name: `[A-Za-z_][A-Za-z0-9_]*`, matchFn: MatchIdentifier,
 			cases: []testCase{
 				{"x", true},
 				{"_", true},
@@ -120,7 +120,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`[0-9]+\.[0-9]+`, matchFn: MatchDottedNumber,
+			name: `[0-9]+\.[0-9]+`, matchFn: MatchDottedNumber,
 			cases: []testCase{
 				{"1.0", true},
 				{"123.456", true},
@@ -132,7 +132,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"(foo|bar)baz", matchFn: MatchFooBarBaz,
+			name: "(foo|bar)baz", matchFn: MatchFooBarBaz,
 			cases: []testCase{
 				{"foobaz", true},
 				{"barbaz", true},
@@ -142,7 +142,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`(https?://)?[a-z]+\.[a-z]{2,}`, matchFn: MatchURL,
+			name: `(https?://)?[a-z]+\.[a-z]{2,}`, matchFn: MatchURL,
 			cases: []testCase{
 				{"example.com", true},
 				{"http://example.com", true},
@@ -154,14 +154,14 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"empty", matchFn: MatchEmpty,
+			name: "empty", matchFn: MatchEmpty,
 			cases: []testCase{
 				{"", true},
 				{"a", false},
 			},
 		},
 		{
-			name:	".", matchFn: MatchDot,
+			name: ".", matchFn: MatchDot,
 			cases: []testCase{
 				{"a", true},
 				{"1", true},
@@ -172,7 +172,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	"(?i)abc", matchFn: MatchCaseIAbc,
+			name: "(?i)abc", matchFn: MatchCaseIAbc,
 			cases: []testCase{
 				{"abc", true},
 				{"ABC", true},
@@ -185,7 +185,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`\w+`, matchFn: MatchWordChars,
+			name: `\w+`, matchFn: MatchWordChars,
 			cases: []testCase{
 				{"hello", true},
 				{"Hello123", true},
@@ -197,7 +197,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`\s+`, matchFn: MatchWhitespace,
+			name: `\s+`, matchFn: MatchWhitespace,
 			cases: []testCase{
 				{" ", true},
 				{"\t", true},
@@ -208,7 +208,7 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:	`[a-z0-9][a-z0-9._-]{0,127}`, matchFn: MatchContainer,
+			name: `[a-z0-9][a-z0-9._-]{0,127}`, matchFn: MatchContainer,
 			cases: []testCase{
 				{"a", true},
 				{"abc", true},
@@ -244,36 +244,36 @@ func TestIntegration(t *testing.T) {
 
 func TestIntegrationPrefix(t *testing.T) {
 	tests := []struct {
-		name	string
-		matchFn	func(string) bool
-		cases	[]testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			name:	"[a-z]+", matchFn: MatchPrefixCharClass,
+			name: "[a-z]+", matchFn: MatchPrefixCharClass,
 			cases: []testCase{
 				{"hello", true},
-				{"hello123", true},	// prefix "hello" matches
+				{"hello123", true}, // prefix "hello" matches
 				{"hello world", true},
 				{"", false},
 				{"123", false},
 			},
 		},
 		{
-			name:	`\d{3}-\d{2}`, matchFn: MatchPrefixDigitDash,
+			name: `\d{3}-\d{2}`, matchFn: MatchPrefixDigitDash,
 			cases: []testCase{
 				{"123-45", true},
-				{"123-45-6789", true},	// prefix matches
+				{"123-45-6789", true}, // prefix matches
 				{"12-45", false},
 				{"abc", false},
 			},
 		},
 		{
-			name:	"a+b", matchFn: MatchPrefixAPlusB,
+			name: "a+b", matchFn: MatchPrefixAPlusB,
 			cases: []testCase{
 				{"ab", true},
 				{"aab", true},
-				{"aabcdef", true},	// prefix "aab" matches
-				{"a", false},		// no prefix matches (b required)
+				{"aabcdef", true}, // prefix "aab" matches
+				{"a", false},      // no prefix matches (b required)
 				{"aaac", false},
 				{"", false},
 			},
@@ -293,32 +293,32 @@ func TestIntegrationPrefix(t *testing.T) {
 
 func TestIntegrationContains(t *testing.T) {
 	tests := []struct {
-		name	string
-		matchFn	func(string) bool
-		cases	[]testCase
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
 	}{
 		{
-			name:	"[a-z]+", matchFn: MatchContainsCharClass,
+			name: "[a-z]+", matchFn: MatchContainsCharClass,
 			cases: []testCase{
 				{"hello", true},
-				{"123hello456", true},	// substring matches
-				{"HELLO", false},	// no lowercase substring
+				{"123hello456", true}, // substring matches
+				{"HELLO", false},      // no lowercase substring
 				{"123", false},
 				{"", false},
 				{"test@example.com", true},
 			},
 		},
 		{
-			name:	`\d{3}-\d{2}-\d{4}`, matchFn: MatchContainsSSN,
+			name: `\d{3}-\d{2}-\d{4}`, matchFn: MatchContainsSSN,
 			cases: []testCase{
 				{"123-45-6789", true},
-				{"SSN: 123-45-6789!", true},	// contained
+				{"SSN: 123-45-6789!", true}, // contained
 				{"abc", false},
 				{"123-45", false},
 			},
 		},
 		{
-			name:	"error", matchFn: MatchContainsError,
+			name: "error", matchFn: MatchContainsError,
 			cases: []testCase{
 				{"error", true},
 				{"an error occurred", true},
@@ -340,18 +340,18 @@ func TestIntegrationContains(t *testing.T) {
 }
 
 type submatchCase struct {
-	input	string
-	groups	[]string	// nil means no match, else groups[0]=full match, groups[1..]=captures
+	input  string
+	groups []string // nil means no match, else groups[0]=full match, groups[1..]=captures
 }
 
 func TestIntegrationSubmatch(t *testing.T) {
 	tests := []struct {
-		name	string
-		findFn	func(string) []string
-		cases	[]submatchCase
+		name   string
+		findFn func(string) []string
+		cases  []submatchCase
 	}{
 		{
-			name:	`([a-z]+)@([a-z]+)`, findFn: FindSubEmail,
+			name: `([a-z]+)@([a-z]+)`, findFn: FindSubEmail,
 			cases: []submatchCase{
 				{"user@host", []string{"user@host", "user", "host"}},
 				{"abc@xyz", []string{"abc@xyz", "abc", "xyz"}},
@@ -360,7 +360,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			name:	`(\d{3})-(\d{2})-(\d{4})`, findFn: FindSubSSN,
+			name: `(\d{3})-(\d{2})-(\d{4})`, findFn: FindSubSSN,
 			cases: []submatchCase{
 				{"123-45-6789", []string{"123-45-6789", "123", "45", "6789"}},
 				{"000-00-0000", []string{"000-00-0000", "000", "00", "0000"}},
@@ -368,7 +368,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			name:	`(a+)(b+)`, findFn: FindSubAB,
+			name: `(a+)(b+)`, findFn: FindSubAB,
 			cases: []submatchCase{
 				{"ab", []string{"ab", "a", "b"}},
 				{"aaabbb", []string{"aaabbb", "aaa", "bbb"}},
@@ -377,7 +377,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			name:	`(foo|bar)baz`, findFn: FindSubFooBarBaz,
+			name: `(foo|bar)baz`, findFn: FindSubFooBarBaz,
 			cases: []submatchCase{
 				{"foobaz", []string{"foobaz", "foo"}},
 				{"barbaz", []string{"barbaz", "bar"}},
@@ -385,7 +385,7 @@ func TestIntegrationSubmatch(t *testing.T) {
 			},
 		},
 		{
-			name:	`([a-z]+)(\.[a-z]+)*`, findFn: FindSubDotted,
+			name: `([a-z]+)(\.[a-z]+)*`, findFn: FindSubDotted,
 			cases: []submatchCase{
 				{"hello", []string{"hello", "hello", ""}},
 				{"abc.def", []string{"abc.def", "abc", ".def"}},

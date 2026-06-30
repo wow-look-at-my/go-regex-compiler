@@ -125,11 +125,7 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 // normalizeGroupNames returns a slice of length numGroups+1 (index 0 == "").
 func normalizeGroupNames(names []string, numGroups int) []string {
 	out := make([]string, numGroups+1)
-	for i := range out {
-		if i < len(names) {
-			out[i] = names[i]
-		}
-	}
+	copy(out, names)
 	out[0] = ""
 	return out
 }
