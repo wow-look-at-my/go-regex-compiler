@@ -1,14 +1,14 @@
 package dfa
 
 import (
+	"github.com/stretchr/testify/require"
 	"regexp/syntax"
 	"testing"
-	"github.com/wow-look-at-my/testify/require"
 )
 
 var benchPatterns = []struct {
-	name	string
-	pattern	string
+	name    string
+	pattern string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},

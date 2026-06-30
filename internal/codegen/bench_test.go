@@ -5,13 +5,13 @@ import (
 	"regexp/syntax"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
-	"github.com/wow-look-at-my/testify/require"
 )
 
 var benchPatterns = []struct {
-	name	string
-	pattern	string
+	name    string
+	pattern string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},
@@ -28,10 +28,10 @@ var benchPatterns = []struct {
 }
 
 type preparedPattern struct {
-	name	string
-	pattern	string
-	dfa	*dfa.DFA
-	prog	*syntax.Prog
+	name    string
+	pattern string
+	dfa     *dfa.DFA
+	prog    *syntax.Prog
 }
 
 func prepareAll(b *testing.B) []preparedPattern {
@@ -54,10 +54,10 @@ func prepareAll(b *testing.B) []preparedPattern {
 		require.Nil(b, err)
 
 		out[i] = preparedPattern{
-			name:		bp.name,
-			pattern:	bp.pattern,
-			dfa:		d,
-			prog:		prog,
+			name:    bp.name,
+			pattern: bp.pattern,
+			dfa:     d,
+			prog:    prog,
 		}
 	}
 	return out
@@ -69,9 +69,9 @@ func BenchmarkGenerate(b *testing.B) {
 	for _, pp := range prepared {
 		b.Run(pp.name, func(b *testing.B) {
 			opts := Options{
-				PackageName:	"bench",
-				FuncName:	"Match",
-				Regex:		pp.pattern,
+				PackageName: "bench",
+				FuncName:    "Match",
+				Regex:       pp.pattern,
 			}
 			for b.Loop() {
 				buf.Reset()
@@ -87,10 +87,10 @@ func BenchmarkGeneratePrefix(b *testing.B) {
 	for _, pp := range prepared {
 		b.Run(pp.name, func(b *testing.B) {
 			opts := Options{
-				PackageName:	"bench",
-				FuncName:	"Match",
-				Regex:		pp.pattern,
-				Mode:		MatchPrefix,
+				PackageName: "bench",
+				FuncName:    "Match",
+				Regex:       pp.pattern,
+				Mode:        MatchPrefix,
 			}
 			for b.Loop() {
 				buf.Reset()
@@ -106,10 +106,10 @@ func BenchmarkGenerateContains(b *testing.B) {
 	for _, pp := range prepared {
 		b.Run(pp.name, func(b *testing.B) {
 			opts := Options{
-				PackageName:	"bench",
-				FuncName:	"Match",
-				Regex:		pp.pattern,
-				Mode:		MatchContains,
+				PackageName: "bench",
+				FuncName:    "Match",
+				Regex:       pp.pattern,
+				Mode:        MatchContains,
 			}
 			for b.Loop() {
 				buf.Reset()
@@ -121,8 +121,8 @@ func BenchmarkGenerateContains(b *testing.B) {
 
 func BenchmarkGenerateSubmatch(b *testing.B) {
 	submatchPatterns := []struct {
-		name	string
-		pattern	string
+		name    string
+		pattern string
 	}{
 		{"simple_groups", `([a-z]+)@([a-z]+)`},
 		{"ssn", `(\d{3})-(\d{2})-(\d{4})`},
@@ -130,11 +130,11 @@ func BenchmarkGenerateSubmatch(b *testing.B) {
 	}
 
 	type prepared struct {
-		name	string
-		pattern	string
-		dfa	*dfa.DFA
-		prog	*syntax.Prog
-		groups	int
+		name    string
+		pattern string
+		dfa     *dfa.DFA
+		prog    *syntax.Prog
+		groups  int
 	}
 
 	items := make([]prepared, len(submatchPatterns))
@@ -151,11 +151,11 @@ func BenchmarkGenerateSubmatch(b *testing.B) {
 		require.Nil(b, err)
 
 		items[i] = prepared{
-			name:		sp.name,
-			pattern:	sp.pattern,
-			dfa:		d,
-			prog:		prog,
-			groups:		groups,
+			name:    sp.name,
+			pattern: sp.pattern,
+			dfa:     d,
+			prog:    prog,
+			groups:  groups,
 		}
 	}
 
@@ -163,15 +163,15 @@ func BenchmarkGenerateSubmatch(b *testing.B) {
 	for _, pp := range items {
 		b.Run(pp.name, func(b *testing.B) {
 			opts := Options{
-				PackageName:	"bench",
-				FuncName:	"Match",
-				Regex:		pp.pattern,
+				PackageName: "bench",
+				FuncName:    "Match",
+				Regex:       pp.pattern,
 				Submatch: &SubmatchOptions{
-					FuncName:	"FindSubmatch",
-					MatchFunc:	"Match",
-					Regex:		pp.pattern,
-					Prog:		pp.prog,
-					NumGroups:	pp.groups,
+					FuncName:  "FindSubmatch",
+					MatchFunc: "Match",
+					Regex:     pp.pattern,
+					Prog:      pp.prog,
+					NumGroups: pp.groups,
 				},
 			}
 			for b.Loop() {

@@ -13,8 +13,8 @@ import (
 )
 
 var fixtures = []struct {
-	file    string
-	regex   string
+	file     string
+	regex    string
 	funcName string
 }{
 	{"gen_literal.go", "abc", "MatchLiteral"},

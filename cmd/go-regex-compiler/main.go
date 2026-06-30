@@ -19,13 +19,17 @@ var rootCmd = &cobra.Command{
 }
 
 var (
-	regex      string
-	pkg        string
-	funcName   string
-	outputPath string
-	matchMode  string
-	submatch   bool
-	submatchFn string
+	regex            string
+	pkg              string
+	funcName         string
+	outputPath       string
+	matchMode        string
+	submatch         bool
+	submatchFn       string
+	submatchNamesFn  string
+	submatchStruct   bool
+	submatchStructTy string
+	submatchStructFn string
 )
 
 func init() {
@@ -34,8 +38,12 @@ func init() {
 	rootCmd.Flags().StringVar(&funcName, "func", "Match", "name of the generated match function")
 	rootCmd.Flags().StringVar(&outputPath, "output", "", "output file path (default: stdout)")
 	rootCmd.Flags().StringVar(&matchMode, "match", "full", "match mode: full (entire string), prefix (start of string), contains (any substring)")
-	rootCmd.Flags().BoolVar(&submatch, "submatch", false, "also generate a FindSubmatch function for capture group extraction")
-	rootCmd.Flags().StringVar(&submatchFn, "submatch-func", "FindSubmatch", "name of the generated submatch function")
+	rootCmd.Flags().BoolVar(&submatch, "submatch", false, "also generate a FindSubmatch function (plus <func>Index and SubexpNames) for capture group extraction")
+	rootCmd.Flags().StringVar(&submatchFn, "submatch-func", "FindSubmatch", "name of the generated positional submatch function (also generates <name>Index)")
+	rootCmd.Flags().StringVar(&submatchNamesFn, "submatch-names-func", "SubexpNames", "name of the generated group-names accessor function")
+	rootCmd.Flags().BoolVar(&submatchStruct, "submatch-struct", false, "also generate a typed capture struct (requires at least one named group)")
+	rootCmd.Flags().StringVar(&submatchStructTy, "submatch-struct-type", "Captures", "name of the generated capture struct type")
+	rootCmd.Flags().StringVar(&submatchStructFn, "submatch-struct-func", "FindCaptures", "name of the generated capture struct constructor function")
 }
 
 func main() {
@@ -90,13 +98,23 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	if submatch && result.NumGroups > 0 {
+		structEnabled := submatchStruct
+		if submatchStruct && !codegen.HasNamedGroups(result.GroupNames) {
+			fmt.Fprintln(os.Stderr, "note: --submatch-struct ignored: the regex has no named capture groups")
+			structEnabled = false
+		}
 		opts.Submatch = &codegen.SubmatchOptions{
-			PackageName: pkg,
-			FuncName:    submatchFn,
-			MatchFunc:   funcName,
-			Regex:       regex,
-			Prog:        result.Prog,
-			NumGroups:   result.NumGroups,
+			PackageName:   pkg,
+			FuncName:      submatchFn,
+			MatchFunc:     funcName,
+			Regex:         regex,
+			Prog:          result.Prog,
+			NumGroups:     result.NumGroups,
+			GroupNames:    result.GroupNames,
+			NamesFuncName: submatchNamesFn,
+			StructEnabled: structEnabled,
+			StructType:    submatchStructTy,
+			StructFunc:    submatchStructFn,
 		}
 	}
 
