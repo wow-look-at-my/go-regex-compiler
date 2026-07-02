@@ -295,6 +295,22 @@ func TestIntegrationPrefix(t *testing.T) {
 				{"", false},
 			},
 		},
+		{
+			// Regression: prefix mode must latch acceptance per step, not
+			// check only the final DFA state. The prefix "a" matches even
+			// though the walk continues into the non-accepting "ab" state.
+			name: "a|abc", matchFn: MatchPrefixAlt,
+			cases: []testCase{
+				{"a", true},
+				{"ab", true}, // prefix "a" (final state after "ab" is non-accepting)
+				{"abc", true},
+				{"abcd", true},
+				{"ax", true}, // prefix "a"
+				{"b", false},
+				{"", false},
+				{"xa", false},
+			},
+		},
 	}
 
 	for _, tt := range tests {

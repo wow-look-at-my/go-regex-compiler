@@ -158,11 +158,11 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	// Emit imports only when the rendered body actually contains a matching
 	// loop. The short-circuit bodies (`return false` for an empty DFA,
 	// `return true`/`return len(input) == 0` for the edge case, and the
-	// contains-mode early return when the start state accepts) reference
-	// neither match.InRange nor utf8.DecodeRuneInString, so an import would
-	// make the generated file fail to compile.
+	// prefix/contains-mode early return when the start state accepts)
+	// reference neither match.InRange nor utf8.DecodeRuneInString, so an
+	// import would make the generated file fail to compile.
 	loopRendered := len(ctx.States) > 0 && !ctx.EdgeCase &&
-		!(opts.Mode == MatchContains && ctx.StartAccepts)
+		!(opts.Mode != MatchFull && ctx.StartAccepts)
 	ctx.NeedMatchImport = ctx.HasRanges && loopRendered
 	ctx.NeedUTF8Import = !ascii && loopRendered
 

@@ -43,6 +43,7 @@ const allTemplates = headerTemplate +
 	utf8LoopTemplate +
 	asciiLoopPrefixTemplate +
 	utf8LoopPrefixTemplate +
+	prefixAcceptLatchTemplate +
 	asciiContainsTemplate +
 	utf8ContainsTemplate +
 	statesTemplate +
@@ -127,8 +128,17 @@ const fullBodyTemplate = `
 
 // ---------- prefix body ----------
 
+// Prefix matching latches acceptance at every step (like the contains
+// templates) instead of testing only the final DFA state: a pattern such as
+// a|abc must report the prefix "a" of "ab" even though the walk ends in the
+// non-accepting "ab" state. Acceptance returns immediately; the start state
+// accepting means the empty prefix matches, so the whole body short-circuits.
+
 const prefixBodyTemplate = `
 {{- define "prefixBody" }}
+{{- if .StartAccepts }}
+	return true
+{{- else }}
 	state := {{ .Start }}
 {{- range chainIndices .NumChains }}
 	chainCount{{ . }} := 0
@@ -138,7 +148,7 @@ const prefixBodyTemplate = `
 {{- else -}}
 {{ template "utf8LoopPrefix" . }}
 {{- end }}
-{{ template "acceptCheck" . }}
+{{- end }}
 {{- end -}}
 `
 
@@ -195,8 +205,10 @@ const asciiLoopPrefixTemplate = `
 		default:
 			goto done
 		}
+{{- template "prefixAcceptLatch" . }}
 	}
 done:
+	return false
 {{- end -}}
 `
 
@@ -212,9 +224,23 @@ const utf8LoopPrefixTemplate = `
 		default:
 			goto done
 		}
+{{- template "prefixAcceptLatch" . }}
 		i += size
 	}
 done:
+	return false
+{{- end -}}
+`
+
+const prefixAcceptLatchTemplate = `
+{{- define "prefixAcceptLatch" }}
+{{- if gt (len .AcceptIDs) 0 }}
+		switch state {
+		case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+			return true
+		default:
+		}
+{{- end }}
 {{- end -}}
 `
 

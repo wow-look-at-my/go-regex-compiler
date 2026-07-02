@@ -103,6 +103,9 @@ var fixtures = []fixture{
 	{"gen_prefix_charclass.go", "[a-z]+", "MatchPrefixCharClass", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_digitdash.go", `\d{3}-\d{2}`, "MatchPrefixDigitDash", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_aplusb.go", "a+b", "MatchPrefixAPlusB", codegen.MatchPrefix, false, ""},
+	// Regression: a shorter alternative must stay latched when a longer
+	// non-matching continuation exists (prefix "a" of "ab" for a|abc).
+	{"gen_prefix_alt.go", "a|abc", "MatchPrefixAlt", codegen.MatchPrefix, false, ""},
 
 	// Contains mode
 	{"gen_contains_charclass.go", "[a-z]+", "MatchContainsCharClass", codegen.MatchContains, false, ""},
