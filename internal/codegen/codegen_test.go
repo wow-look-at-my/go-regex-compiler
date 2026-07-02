@@ -308,7 +308,7 @@ func TestGenerateSubmatch(t *testing.T) {
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
 			assert.Contains(t, output, "opRune")
-			assert.Contains(t, output, "nfaInst")
+			assert.Contains(t, output, "nfaProg")
 			assert.Contains(t, output, "addThread")
 			assert.Contains(t, output, "runeMatch")
 		})

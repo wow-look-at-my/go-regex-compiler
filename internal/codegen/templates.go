@@ -324,7 +324,46 @@ const submatchFuncTemplate = `
 
 const nfaTableTemplate = `
 {{- define "nfaTable" -}}
-	// NFA instruction types
+// nfaProg{{ .IndexFuncName }} is the NFA instruction table for the regex
+// {{ quoteRegex .Regex }}, built once at package initialization. Ops:
+// 0=rune 1=rune1 2=runeAny 3=runeAnyNotNL 4=alt 5=capture 6=match 7=nop
+// 8=fail 9=emptyWidth.
+var nfaProg{{ .IndexFuncName }} = []struct {
+	op    int
+	out   int
+	arg   int
+	runes []rune
+}{
+{{- range .Instructions }}
+	/* {{ .Index }} {{ .OpName }} */ {op: {{ .OpNum }}, out: {{ .Out }}, arg: {{ .Arg }}{{ if .Runes }}, runes: {{ .Runes }}{{ end }}},
+{{- end }}
+}
+{{ end -}}
+`
+
+const submatchIndexFuncTemplate = `
+{{- define "submatchIndexFunc" -}}
+{{ template "nfaTable" . }}
+// {{ .IndexFuncName }} returns the submatch index slice for the regex {{ quoteRegex .Regex }},
+// or nil if the input does not match. The slice has length 2*(N+1) where N is
+// the number of capture groups: pair (2*g, 2*g+1) holds the absolute byte
+// offsets [start, end) of group g, with index 0 being the whole match. A
+// non-participating group has the pair (-1, -1). This is parity with
+// regexp.Regexp.FindStringSubmatchIndex.
+func {{ .IndexFuncName }}(input string) []int {
+	if !{{ .MatchFunc }}(input) {
+		return nil
+	}
+	prog := nfaProg{{ .IndexFuncName }}
+	startPC := {{ .StartPC }}
+{{ template "nfaSim" . }}
+}
+{{ end -}}
+`
+
+const nfaSimTemplate = `
+{{- define "nfaSim" -}}
+	// NFA instruction types (indices into nfaProg op fields).
 	const (
 		opRune      = 0
 		opRune1     = 1
@@ -349,42 +388,6 @@ const nfaTableTemplate = `
 		emptyNoWordBoundary = 32
 	)
 
-	type nfaInst struct {
-		op   int
-		out  int
-		arg  int
-		runes []rune
-	}
-
-	prog := []nfaInst{
-{{- range .Instructions }}
-		/* {{ .Index }} */ {op: {{ .OpName }}, out: {{ .Out }}, arg: {{ .Arg }}{{ if .Runes }}, runes: {{ .Runes }}{{ end }}},
-{{- end }}
-	}
-	startPC := {{ .StartPC }}
-{{ end -}}
-`
-
-const submatchIndexFuncTemplate = `
-{{- define "submatchIndexFunc" -}}
-// {{ .IndexFuncName }} returns the submatch index slice for the regex {{ quoteRegex .Regex }},
-// or nil if the input does not match. The slice has length 2*(N+1) where N is
-// the number of capture groups: pair (2*g, 2*g+1) holds the absolute byte
-// offsets [start, end) of group g, with index 0 being the whole match. A
-// non-participating group has the pair (-1, -1). This is parity with
-// regexp.Regexp.FindStringSubmatchIndex.
-func {{ .IndexFuncName }}(input string) []int {
-	if !{{ .MatchFunc }}(input) {
-		return nil
-	}
-{{ template "nfaTable" . }}
-{{ template "nfaSim" . }}
-}
-{{ end -}}
-`
-
-const nfaSimTemplate = `
-{{- define "nfaSim" -}}
 	// isWordChar reports whether r is a word character ([0-9A-Za-z_]).
 	isWordChar := func(r rune) bool {
 		return r == '_' ||
@@ -424,50 +427,58 @@ const nfaSimTemplate = `
 	// preserved (leftmost-first, matching Go's default regexp engine): the
 	// stack-based closure explores the high-priority branch (out) before the
 	// low-priority branch (arg) of each alternation.
+	//
+	// All scratch state (visited marks, closure stack, thread lists) lives in
+	// this frame and is reused across positions: the simulation performs a
+	// bounded number of allocations regardless of input length. visited is
+	// generation-stamped and shared by every addThread call within one step,
+	// so each pc runs at most once per position (the first, highest-priority
+	// thread to claim it wins, as in regexp).
 	type thread struct {
 		pc   int
 		caps [{{ .NumSlots }}]int
 	}
+	type frame struct {
+		pc   int
+		caps [{{ .NumSlots }}]int
+	}
+	visited := make([]int, len(prog))
+	gen := 0
+	var stack []frame
 
 	addThread := func(list []thread, pc int, caps [{{ .NumSlots }}]int, pos int, before, after rune) []thread {
-		visited := make(map[int]bool)
-		type frame struct {
-			pc   int
-			caps [{{ .NumSlots }}]int
-		}
-		var stack []frame
-		stack = append(stack, frame{pc: pc, caps: caps})
+		stack = append(stack[:0], frame{pc: pc, caps: caps})
 		// emptyOps for this position, computed lazily on the first opEmpty.
 		ops := -1
 		for len(stack) > 0 {
 			f := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			if f.pc < 0 || f.pc >= len(prog) || visited[f.pc] {
+			if f.pc < 0 || f.pc >= len(prog) || visited[f.pc] == gen {
 				continue
 			}
-			visited[f.pc] = true
+			visited[f.pc] = gen
 			inst := &prog[f.pc]
 			switch inst.op {
 			case opAlt:
 				// Push low priority first so high priority (out) is processed first.
 				stack = append(stack, frame{pc: inst.arg, caps: f.caps})
-				stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+				stack = append(stack, frame{pc: inst.out, caps: f.caps})
 			case opNop:
-				stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+				stack = append(stack, frame{pc: inst.out, caps: f.caps})
 			case opEmpty:
 				if ops < 0 {
 					ops = emptyOpsAt(before, after)
 				}
 				// The assertion holds iff every required bit is satisfied.
 				if inst.arg&^ops == 0 {
-					stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+					stack = append(stack, frame{pc: inst.out, caps: f.caps})
 				}
 			case opCapture:
 				newCaps := f.caps
 				if inst.arg < {{ .NumSlots }} {
 					newCaps[inst.arg] = pos
 				}
-				stack = append(stack, frame{pc: int(inst.out), caps: newCaps})
+				stack = append(stack, frame{pc: inst.out, caps: newCaps})
 			default:
 				list = append(list, thread{pc: f.pc, caps: f.caps})
 			}
@@ -475,27 +486,22 @@ const nfaSimTemplate = `
 		return list
 	}
 
-	runeMatch := func(inst *nfaInst, r rune) bool {
-		switch inst.op {
+	runeMatch := func(op int, runes []rune, r rune) bool {
+		switch op {
 		case opRuneAny:
 			return true
 		case opRuneAnyNL:
 			return r != '\n'
 		case opRune1:
-			if len(inst.runes) > 0 && inst.runes[0] == r {
-				return true
-			}
-			return false
+			return len(runes) > 0 && runes[0] == r
 		case opRune:
-			for i := 0; i < len(inst.runes)-1; i += 2 {
-				if r >= inst.runes[i] && r <= inst.runes[i+1] {
+			for i := 0; i < len(runes)-1; i += 2 {
+				if r >= runes[i] && r <= runes[i+1] {
 					return true
 				}
 			}
-			if len(inst.runes)%2 == 1 {
-				if r == inst.runes[len(inst.runes)-1] {
-					return true
-				}
+			if len(runes)%2 == 1 && r == runes[len(runes)-1] {
+				return true
 			}
 			return false
 		}
@@ -525,8 +531,10 @@ const nfaSimTemplate = `
 	if len(runes) > 0 {
 		firstRune = runes[0]
 	}
+	gen++
 	current := addThread(nil, startPC, initCaps, 0, -1, firstRune)
 
+	var next []thread
 	for k := 0; k < len(runes); k++ {
 		r := runes[k]
 		nextPos := offs[k+1]
@@ -535,14 +543,15 @@ const nfaSimTemplate = `
 		if k+1 < len(runes) {
 			afterRune = runes[k+1]
 		}
-		var next []thread
+		gen++
+		next = next[:0]
 		for _, t := range current {
 			inst := &prog[t.pc]
-			if runeMatch(inst, r) {
-				next = addThread(next, int(inst.out), t.caps, nextPos, r, afterRune)
+			if runeMatch(inst.op, inst.runes, r) {
+				next = addThread(next, inst.out, t.caps, nextPos, r, afterRune)
 			}
 		}
-		current = next
+		current, next = next, current
 	}
 
 	for _, t := range current {

@@ -59,7 +59,8 @@ type structField struct {
 
 type nfaInstruction struct {
 	Index  int
-	OpName string
+	OpName string // human-readable op, emitted as a comment
+	OpNum  int    // numeric op emitted into the package-level table
 	Out    uint32
 	// Arg holds the instruction's argument. For opCapture it is the capture
 	// slot; for opEmpty it is the syntax.EmptyOp assertion bitmask (the
@@ -97,6 +98,7 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		ni := nfaInstruction{
 			Index:  i,
 			OpName: instOpName(inst.Op),
+			OpNum:  instOpNum(inst.Op),
 			Out:    inst.Out,
 			Arg:    int(inst.Arg),
 		}
@@ -205,6 +207,36 @@ func instOpName(op syntax.InstOp) string {
 		return "opEmpty"
 	default:
 		return fmt.Sprintf("%d", op)
+	}
+}
+
+// instOpNum maps a syntax.InstOp to the numeric op values used by the
+// generated table and simulation (the const legend in the nfaSim template
+// must stay in sync).
+func instOpNum(op syntax.InstOp) int {
+	switch op {
+	case syntax.InstRune:
+		return 0
+	case syntax.InstRune1:
+		return 1
+	case syntax.InstRuneAny:
+		return 2
+	case syntax.InstRuneAnyNotNL:
+		return 3
+	case syntax.InstAlt, syntax.InstAltMatch:
+		return 4
+	case syntax.InstCapture:
+		return 5
+	case syntax.InstMatch:
+		return 6
+	case syntax.InstNop:
+		return 7
+	case syntax.InstFail:
+		return 8
+	case syntax.InstEmptyWidth:
+		return 9
+	default:
+		return 8 // treat unknown ops as opFail: they can never match
 	}
 }
 
