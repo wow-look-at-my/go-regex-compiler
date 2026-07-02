@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"github.com/stretchr/testify/require"
 	"regexp"
 	"strings"
 	"testing"
@@ -101,9 +102,8 @@ var containsCases = []struct {
 func BenchmarkContains(b *testing.B) {
 	for _, bc := range containsCases {
 		re := regexp.MustCompile(bc.pattern)
-		if re.MatchString(bc.haystack) != bc.generated(bc.haystack) {
-			b.Fatalf("%s: generated and regexp disagree", bc.name)
-		}
+		require.Equal(b, bc.generated(bc.haystack), re.MatchString(bc.haystack))
+
 		b.Run(bc.name+"/generated", func(b *testing.B) {
 			for b.Loop() {
 				bc.generated(bc.haystack)
