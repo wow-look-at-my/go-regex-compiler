@@ -16,6 +16,7 @@ var funcMap = template.FuncMap{
 	"isLive":               func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":                 func(args ...any) []any { return args },
 	"stateTransition":      stateTransition,
+	"quoteByte":            quoteByte,
 	"groupByteTransitions": groupByteTransitions,
 	"groupRuneTransitions": groupRuneTransitions,
 	"groupTransitions": func(ctx templateContext, kind string, s templateState) []groupedCase {
@@ -65,6 +66,9 @@ package {{ .PackageName }}
 
 {{ if .HasRanges }}
 import "github.com/wow-look-at-my/go-regex-compiler/match"
+{{ end }}
+{{ if or .SkipToByte .LiteralContains }}
+import "strings"
 {{ end }}
 {{ if not .ASCII }}
 import "unicode/utf8"
@@ -165,6 +169,8 @@ const containsBodyTemplate = `
 {{- define "containsBody" }}
 {{- if .StartAccepts }}
 	return true
+{{- else if .LiteralContains }}
+	return strings.Contains(input, {{ goString .Literal }})
 {{- else }}
 	state := {{ .Start }}
 {{- range chainIndices .NumChains }}
@@ -216,6 +222,16 @@ const utf8LoopTemplate = `
 const asciiSearchLoopTemplate = `
 {{- define "asciiSearchLoop" }}
 	for i := 0; i < len(input); i++ {
+{{- if .SkipToByte }}
+		if state == {{ .Start }} {
+			// The DFA can only leave the start state on {{ quoteByte .SkipByte }}: memchr to it.
+			j := strings.IndexByte(input[i:], {{ quoteByte .SkipByte }})
+			if j < 0 {
+				return false
+			}
+			i += j
+		}
+{{- end }}
 		c := input[i]
 		switch state {
 {{ template "statesASCIISearch" . }}

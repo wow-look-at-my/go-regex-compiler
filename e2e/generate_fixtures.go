@@ -106,7 +106,10 @@ var fixtures = []fixture{
 	{"gen_contains_error.go", "error", "MatchContainsError", codegen.MatchContains, false, ""},
 	// Regression: self-overlapping literal — the search DFA must track a match
 	// attempt that starts INSIDE a failed earlier attempt ("aaab" contains "aab").
+	// (A complete literal compiles to strings.Contains; this guards that path.)
 	{"gen_contains_overlap.go", "aab", "MatchContainsOverlap", codegen.MatchContains, false, ""},
+	// Same overlap shape through the DFA scan loop (non-literal pattern).
+	{"gen_contains_overlap_class.go", "aa[bc]", "MatchContainsOverlapClass", codegen.MatchContains, false, ""},
 	// Regression: unbounded backtracking shape that made the old
 	// restart-at-every-position loop O(n^2) on all-'a' inputs.
 	{"gen_contains_astarb.go", "a*b", "MatchContainsAStarB", codegen.MatchContains, false, ""},
@@ -208,12 +211,14 @@ func generateMatch(f fixture) error {
 		return fmt.Errorf("dfa %q: %w", f.regex, err)
 	}
 	var buf bytes.Buffer
-	err = codegen.Generate(&buf, d, codegen.Options{
+	opts := codegen.Options{
 		PackageName: "e2e",
 		FuncName:    f.funcName,
 		Regex:       f.regex,
 		Mode:        f.mode,
-	})
+	}
+	opts.LiteralPrefix, opts.LiteralComplete = prog.Prefix()
+	err = codegen.Generate(&buf, d, opts)
 	if err != nil {
 		return fmt.Errorf("codegen %q: %w", f.regex, err)
 	}

@@ -56,12 +56,14 @@ func main() {
 			os.Exit(1)
 		}
 		var buf bytes.Buffer
-		err = codegen.Generate(&buf, d, codegen.Options{
+		opts := codegen.Options{
 			PackageName: "bench",
 			FuncName:    f.funcName,
 			Regex:       f.regex,
 			Mode:        f.mode,
-		})
+		}
+		opts.LiteralPrefix, opts.LiteralComplete = prog.Prefix()
+		err = codegen.Generate(&buf, d, opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "codegen %q: %v\n", f.regex, err)
 			os.Exit(1)

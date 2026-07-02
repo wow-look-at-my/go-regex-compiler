@@ -29,6 +29,13 @@ type Options struct {
 	Regex       string           // Original regex (for comment)
 	Mode        MatchMode        // Match mode (default: MatchFull)
 	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
+
+	// LiteralPrefix/LiteralComplete mirror syntax.Prog.Prefix() for the
+	// pattern: when LiteralComplete is true the pattern matches exactly the
+	// literal LiteralPrefix, and contains mode compiles to a single
+	// strings.Contains call instead of a DFA scan.
+	LiteralPrefix   string
+	LiteralComplete bool
 }
 
 // templateContext holds all data needed by the top-level templates.
@@ -54,6 +61,17 @@ type templateContext struct {
 	// state machine (they become unreachable).
 	EarlyAccept bool
 	acceptSet   map[int]bool // IDs of accepting states (for EarlyAccept rendering)
+
+	// SkipToByte enables the strings.IndexByte fast path in the contains-mode
+	// scan loop: when the search DFA sits in its start state and can only
+	// leave it on one specific byte, memchr to that byte instead of stepping.
+	SkipToByte bool
+	SkipByte   rune
+
+	// LiteralContains replaces the contains-mode body with a single
+	// strings.Contains(input, Literal) call (pattern is one exact literal).
+	LiteralContains bool
+	Literal         string
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -175,6 +193,32 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 		if ctx.HasRanges {
 			break
+		}
+	}
+
+	// Contains fast paths.
+	if opts.Mode == MatchContains && !ctx.StartAccepts && !ctx.EdgeCase {
+		// The whole pattern is one literal: contains IS strings.Contains.
+		if opts.LiteralComplete && opts.LiteralPrefix != "" {
+			ctx.LiteralContains = true
+			ctx.Literal = opts.LiteralPrefix
+		}
+		// Otherwise, if the scan can only leave the start state on one
+		// specific byte, use strings.IndexByte (memchr) to jump to the next
+		// candidate instead of stepping the DFA byte-by-byte. Chain-compressed
+		// start states are excluded: for those, state == Start does not mean
+		// "at scan start" (the chain counter carries progress).
+		if !ctx.LiteralContains && ctx.ASCII {
+			for _, s := range ctx.States {
+				if s.ID != ctx.Start {
+					continue
+				}
+				if !s.IsChain && len(s.Transitions) == 1 && s.Transitions[0].Lo == s.Transitions[0].Hi {
+					ctx.SkipToByte = true
+					ctx.SkipByte = s.Transitions[0].Lo
+				}
+				break
+			}
 		}
 	}
 

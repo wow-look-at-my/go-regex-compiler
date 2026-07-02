@@ -369,6 +369,20 @@ func TestIntegrationContains(t *testing.T) {
 			},
 		},
 		{
+			// Same overlap regression through the DFA scan loop (the pattern
+			// is not a pure literal, so no strings.Contains shortcut).
+			name: "aa[bc]", matchFn: MatchContainsOverlapClass,
+			cases: []testCase{
+				{"aab", true},
+				{"aac", true},
+				{"aaab", true},  // match at offset 1, inside the failed attempt at 0
+				{"aaaac", true}, // match at offset 2
+				{"aad", false},
+				{"ab", false},
+				{"", false},
+			},
+		},
+		{
 			name: "a*b", matchFn: MatchContainsAStarB,
 			cases: []testCase{
 				{"b", true},

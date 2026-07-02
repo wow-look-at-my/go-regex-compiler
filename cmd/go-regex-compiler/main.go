@@ -122,6 +122,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		Regex:       regex,
 		Mode:        mode,
 	}
+	opts.LiteralPrefix, opts.LiteralComplete = result.Prog.Prefix()
 
 	if submatch && result.NumGroups > 0 {
 		structEnabled := submatchStruct
