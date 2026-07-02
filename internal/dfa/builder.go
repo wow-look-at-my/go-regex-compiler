@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp/syntax"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -40,9 +41,16 @@ func BuildSearch(prog *syntax.Prog) (*DFA, error) {
 type builder struct {
 	prog     *syntax.Prog
 	stateMap map[string]int // serialized NFA state set -> DFA state ID
+	nfaSets  [][]int        // DFA state ID -> sorted NFA state set (parallel to dfa.States)
 	dfa      DFA
 	search   bool  // seed the start closure into every state (unanchored search)
 	startSet []int // epsilon closure of prog.Start
+
+	// Scratch state for epsilonClosure, reused across calls: visited[pc] holds
+	// the generation of the last closure that reached pc.
+	visited []int
+	gen     int
+	stack   []int
 }
 
 func (b *builder) build() (*DFA, error) {
@@ -53,8 +61,8 @@ func (b *builder) build() (*DFA, error) {
 	// Worklist: process each DFA state
 	for i := 0; i < len(b.dfa.States); i++ {
 		state := b.dfa.States[i]
-		alphabet := b.computeAlphabet(startSetFromState(state, b))
 		nfaStates := b.nfaStatesForDFA(state.ID)
+		alphabet := b.computeAlphabet(nfaStates)
 
 		for _, rr := range alphabet {
 			moved := b.move(nfaStates, rr.Lo, rr.Hi)
@@ -106,32 +114,32 @@ func unionSorted(a, b []int) []int {
 	return result
 }
 
-// nfaStatesForDFA returns the NFA states for a given DFA state ID by reverse lookup.
+// nfaStatesForDFA returns the NFA state set for a given DFA state ID.
 func (b *builder) nfaStatesForDFA(id int) []int {
-	for key, stateID := range b.stateMap {
-		if stateID == id {
-			return deserializeStateSet(key)
-		}
-	}
-	return nil
+	return b.nfaSets[id]
 }
 
 // epsilonClosure computes all NFA states reachable from the given states
 // via epsilon transitions (InstAlt, InstAltMatch, InstNop, InstCapture, InstEmptyWidth).
 func (b *builder) epsilonClosure(states []int) []int {
-	visited := make(map[int]bool)
-	stack := append([]int{}, states...)
+	if b.visited == nil {
+		b.visited = make([]int, len(b.prog.Inst))
+	}
+	b.gen++
+	stack := append(b.stack[:0], states...)
 
+	var result []int
 	for len(stack) > 0 {
 		pc := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if visited[pc] {
-			continue
-		}
 		if pc < 0 || pc >= len(b.prog.Inst) {
 			continue
 		}
-		visited[pc] = true
+		if b.visited[pc] == b.gen {
+			continue
+		}
+		b.visited[pc] = b.gen
+		result = append(result, pc)
 
 		inst := &b.prog.Inst[pc]
 		switch inst.Op {
@@ -149,11 +157,8 @@ func (b *builder) epsilonClosure(states []int) []int {
 			// These are terminal for epsilon closure
 		}
 	}
+	b.stack = stack[:0]
 
-	result := make([]int, 0, len(visited))
-	for pc := range visited {
-		result = append(result, pc)
-	}
 	sort.Ints(result)
 	return result
 }
@@ -303,11 +308,6 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 	return ranges
 }
 
-// startSetFromState returns the NFA states for a given DFA state.
-func startSetFromState(state *State, b *builder) []int {
-	return b.nfaStatesForDFA(state.ID)
-}
-
 // getOrCreateState returns the DFA state ID for the given NFA state set,
 // creating a new DFA state if necessary.
 func (b *builder) getOrCreateState(nfaStates []int) int {
@@ -318,6 +318,7 @@ func (b *builder) getOrCreateState(nfaStates []int) int {
 
 	id := len(b.dfa.States)
 	b.stateMap[key] = id
+	b.nfaSets = append(b.nfaSets, nfaStates)
 
 	accept := false
 	for _, pc := range nfaStates {
@@ -336,25 +337,14 @@ func (b *builder) getOrCreateState(nfaStates []int) int {
 
 func serializeStateSet(states []int) string {
 	var sb strings.Builder
+	sb.Grow(len(states) * 4)
 	for i, s := range states {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		fmt.Fprintf(&sb, "%d", s)
+		sb.WriteString(strconv.Itoa(s))
 	}
 	return sb.String()
-}
-
-func deserializeStateSet(key string) []int {
-	if key == "" {
-		return nil
-	}
-	parts := strings.Split(key, ",")
-	result := make([]int, len(parts))
-	for i, p := range parts {
-		fmt.Sscanf(p, "%d", &result[i])
-	}
-	return result
 }
 
 // expandFoldCase expands rune range pairs to include all case-folded equivalents.
