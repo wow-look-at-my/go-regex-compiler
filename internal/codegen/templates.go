@@ -183,10 +183,9 @@ const asciiLoopTemplate = `
 const utf8LoopTemplate = `
 {{- define "utf8Loop" }}
 	for i := 0; i < len(input); {
+		// Invalid UTF-8 decodes as (RuneError, 1) and is matched as U+FFFD,
+		// exactly like regexp: each bad byte is one U+FFFD rune.
 		r, size := utf8.DecodeRuneInString(input[i:])
-		if r == utf8.RuneError && size == 1 {
-			return false
-		}
 		switch state {
 {{ template "statesRune" . }}
 		default:
@@ -249,9 +248,6 @@ const utf8ContainsTemplate = `
 		matched := false
 		for i := start; i < len(input); {
 			r, size := utf8.DecodeRuneInString(input[i:])
-			if r == utf8.RuneError && size == 1 {
-				break
-			}
 			dead := false
 			switch state {
 {{ template "statesRuneContains" . }}
