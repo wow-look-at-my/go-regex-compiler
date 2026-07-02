@@ -104,6 +104,14 @@ var fixtures = []fixture{
 	{"gen_contains_charclass.go", "[a-z]+", "MatchContainsCharClass", codegen.MatchContains, false, ""},
 	{"gen_contains_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchContainsSSN", codegen.MatchContains, false, ""},
 	{"gen_contains_error.go", "error", "MatchContainsError", codegen.MatchContains, false, ""},
+	// Regression: self-overlapping literal — the search DFA must track a match
+	// attempt that starts INSIDE a failed earlier attempt ("aaab" contains "aab").
+	{"gen_contains_overlap.go", "aab", "MatchContainsOverlap", codegen.MatchContains, false, ""},
+	// Regression: unbounded backtracking shape that made the old
+	// restart-at-every-position loop O(n^2) on all-'a' inputs.
+	{"gen_contains_astarb.go", "a*b", "MatchContainsAStarB", codegen.MatchContains, false, ""},
+	// Unicode contains: exercises the rune-loop search DFA.
+	{"gen_contains_unicode.go", `[\x{00C0}-\x{00FF}]+`, "MatchContainsUnicode", codegen.MatchContains, false, ""},
 
 	// Submatch
 	{"gen_sub_email.go", `([a-z]+)@([a-z]+)`, "MatchSubEmail", codegen.MatchFull, true, "FindSubEmail"},
@@ -178,7 +186,11 @@ func generateMatch(f fixture) error {
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
 	}
-	d, err := dfa.Build(prog)
+	build := dfa.Build
+	if f.mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(prog)
 	if err != nil {
 		return fmt.Errorf("dfa %q: %w", f.regex, err)
 	}

@@ -16,15 +16,19 @@ var fixtures = []struct {
 	file     string
 	regex    string
 	funcName string
+	mode     codegen.MatchMode
 }{
-	{"gen_literal.go", "abc", "MatchLiteral"},
-	{"gen_charclass.go", "[a-z]+", "MatchCharClass"},
-	{"gen_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchSSN"},
-	{"gen_email.go", `[a-z]+@[a-z]+\.[a-z]{2,}`, "MatchEmail"},
-	{"gen_identifier.go", `[A-Za-z_][A-Za-z0-9_]*`, "MatchIdentifier"},
-	{"gen_url.go", `(https?://)?[a-z]+\.[a-z]{2,}`, "MatchURL"},
-	{"gen_casei.go", "(?i)hello", "MatchCaseInsensitive"},
-	{"gen_hexcolor.go", `#[0-9a-f]{6}`, "MatchHexColor"},
+	{"gen_literal.go", "abc", "MatchLiteral", codegen.MatchFull},
+	{"gen_charclass.go", "[a-z]+", "MatchCharClass", codegen.MatchFull},
+	{"gen_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchSSN", codegen.MatchFull},
+	{"gen_email.go", `[a-z]+@[a-z]+\.[a-z]{2,}`, "MatchEmail", codegen.MatchFull},
+	{"gen_identifier.go", `[A-Za-z_][A-Za-z0-9_]*`, "MatchIdentifier", codegen.MatchFull},
+	{"gen_url.go", `(https?://)?[a-z]+\.[a-z]{2,}`, "MatchURL", codegen.MatchFull},
+	{"gen_casei.go", "(?i)hello", "MatchCaseInsensitive", codegen.MatchFull},
+	{"gen_hexcolor.go", `#[0-9a-f]{6}`, "MatchHexColor", codegen.MatchFull},
+	{"gen_contains_literal.go", "error", "ContainsError", codegen.MatchContains},
+	{"gen_contains_ssn.go", `\d{3}-\d{2}-\d{4}`, "ContainsSSN", codegen.MatchContains},
+	{"gen_contains_astarb.go", "a*b", "ContainsAStarB", codegen.MatchContains},
 }
 
 func main() {
@@ -34,7 +38,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "parse %q: %v\n", f.regex, err)
 			os.Exit(1)
 		}
-		d, err := dfa.Build(prog)
+		build := dfa.Build
+		if f.mode == codegen.MatchContains {
+			build = dfa.BuildSearch
+		}
+		d, err := build(prog)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dfa %q: %v\n", f.regex, err)
 			os.Exit(1)
@@ -44,6 +52,7 @@ func main() {
 			PackageName: "bench",
 			FuncName:    f.funcName,
 			Regex:       f.regex,
+			Mode:        f.mode,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "codegen %q: %v\n", f.regex, err)

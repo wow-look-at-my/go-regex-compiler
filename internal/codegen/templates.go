@@ -42,12 +42,10 @@ const allTemplates = headerTemplate +
 	containsBodyTemplate +
 	asciiLoopTemplate +
 	utf8LoopTemplate +
-	asciiContainsTemplate +
-	utf8ContainsTemplate +
+	asciiSearchLoopTemplate +
+	utf8SearchLoopTemplate +
 	statesTemplate +
-	statesContainsTemplate +
 	acceptCheckTemplate +
-	acceptIDsTemplate +
 	submatchFuncTemplate +
 	submatchIndexFuncTemplate +
 	submatchStringFuncTemplate +
@@ -154,13 +152,30 @@ const prefixBodyTemplate = `
 `
 
 // ---------- contains body ----------
+//
+// Contains mode runs a SEARCH DFA (dfa.BuildSearch): the start closure is
+// folded into every state, so one left-to-right pass tracks every possible
+// match start simultaneously. Entering an accepting state proves a substring
+// match (EarlyAccept renders those transitions as "return true"), and a rune
+// with no transition simply restarts at the start state -- the builder omits
+// those edges and the switch default handles them. This replaces the old
+// O(n^2) restart-the-DFA-at-every-position loop with a single O(n) scan.
 
 const containsBodyTemplate = `
-{{- define "containsBody" -}}
+{{- define "containsBody" }}
+{{- if .StartAccepts }}
+	return true
+{{- else }}
+	state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+	chainCount{{ . }} := 0
+{{- end }}
 {{- if .ASCII -}}
-{{ template "asciiContains" . }}
+{{ template "asciiSearchLoop" . }}
 {{- else -}}
-{{ template "utf8Contains" . }}
+{{ template "utf8SearchLoop" . }}
+{{- end }}
+	return false
 {{- end }}
 {{- end -}}
 `
@@ -198,84 +213,32 @@ const utf8LoopTemplate = `
 
 // ---------- contains loops ----------
 
-const asciiContainsTemplate = `
-{{- define "asciiContains" }}
-{{- if .StartAccepts }}
-	return true
-{{- else }}
-	for start := 0; start <= len(input); start++ {
-		state := {{ .Start }}
-{{- range chainIndices .NumChains }}
-		chainCount{{ . }} := 0
-{{- end }}
-		matched := false
-		for i := start; i < len(input); i++ {
-			c := input[i]
-			dead := false
-			switch state {
-{{ template "statesASCIIContains" . }}
-			default:
-				dead = true
-			}
-			if dead {
-				break
-			}
-			switch state {
-{{ template "acceptIDs" . }}
-				matched = true
-			default:
-			}
-		}
-		if matched {
-			return true
+const asciiSearchLoopTemplate = `
+{{- define "asciiSearchLoop" }}
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		switch state {
+{{ template "statesASCIISearch" . }}
+		default:
+			state = {{ .Start }}
 		}
 	}
-	return false
-{{- end }}
 {{- end -}}
 `
 
-const utf8ContainsTemplate = `
-{{- define "utf8Contains" }}
-{{- if .StartAccepts }}
-	return true
-{{- else }}
-	for start := 0; start <= len(input); {
-		state := {{ .Start }}
-{{- range chainIndices .NumChains }}
-		chainCount{{ . }} := 0
-{{- end }}
-		matched := false
-		for i := start; i < len(input); {
-			r, size := utf8.DecodeRuneInString(input[i:])
-			dead := false
-			switch state {
-{{ template "statesRuneContains" . }}
-			default:
-				dead = true
-			}
-			if dead {
-				break
-			}
-			switch state {
-{{ template "acceptIDs" . }}
-				matched = true
-			default:
-			}
-			i += size
+const utf8SearchLoopTemplate = `
+{{- define "utf8SearchLoop" }}
+	for i := 0; i < len(input); {
+		// Invalid UTF-8 decodes as (RuneError, 1) and is matched as U+FFFD,
+		// exactly like regexp: each bad byte is one U+FFFD rune.
+		r, size := utf8.DecodeRuneInString(input[i:])
+		switch state {
+{{ template "statesRuneSearch" . }}
+		default:
+			state = {{ .Start }}
 		}
-		if matched {
-			return true
-		}
-		if start < len(input) {
-			_, size := utf8.DecodeRuneInString(input[start:])
-			start += size
-		} else {
-			start++
-		}
+		i += size
 	}
-	return false
-{{- end }}
 {{- end -}}
 `
 
@@ -287,6 +250,8 @@ const utf8ContainsTemplate = `
 const statesTemplate = `
 {{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
 {{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
+{{- define "statesASCIISearch" }}{{ template "statesInner" (args . "byte" (printf "state = %d" .Start)) }}{{ end }}
+{{- define "statesRuneSearch" }}{{ template "statesInner" (args . "rune" (printf "state = %d" .Start)) }}{{ end }}
 {{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
@@ -299,24 +264,6 @@ const statesTemplate = `
 {{- end }}
 			default: {{ $noMatch }}
 			}
-{{- end }}{{ end }}
-{{- end -}}
-`
-
-const statesContainsTemplate = `
-{{- define "statesASCIIContains" }}{{ template "statesContainsInner" (args . "byte") }}{{ end }}
-{{- define "statesRuneContains" }}{{ template "statesContainsInner" (args . "rune") }}{{ end }}
-{{- define "statesContainsInner" -}}
-{{- $ctx := index . 0 -}}
-{{- $condKind := index . 1 -}}
-{{- range $ctx.States }}{{ if isLive . }}
-			case {{ .ID }}:
-				switch {
-{{- range groupTransitions $ctx $condKind . }}
-				case {{ .Cond }}: {{ .Body }}
-{{- end }}
-				default: dead = true
-				}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -336,14 +283,6 @@ const acceptCheckTemplate = `
 	default:
 		return false
 	}
-{{- end }}
-{{- end -}}
-`
-
-const acceptIDsTemplate = `
-{{- define "acceptIDs" -}}
-{{- if gt (len .AcceptIDs) 0 }}
-			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
 {{- end }}
 {{- end -}}
 `

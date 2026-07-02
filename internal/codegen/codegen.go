@@ -146,7 +146,10 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 	}
 
-	if opts.Mode == MatchPrefix {
+	// Prefix: some prefix matched. Contains: the DFA is a search DFA (built
+	// with dfa.BuildSearch), so an accepting state means some substring
+	// ending at the current position matched.
+	if opts.Mode == MatchPrefix || opts.Mode == MatchContains {
 		ctx.EarlyAccept = true
 	}
 	if ctx.EarlyAccept && !ctx.StartAccepts {

@@ -350,6 +350,42 @@ func TestIntegrationContains(t *testing.T) {
 				{"an error occurred", true},
 				{"ERROR", false},
 				{"", false},
+				{"errerror", true}, // match starts inside a failed attempt
+				{"erroerror", true},
+			},
+		},
+		{
+			// Regression: self-overlapping literal. A failed attempt must not
+			// swallow the start of the real match.
+			name: "aab", matchFn: MatchContainsOverlap,
+			cases: []testCase{
+				{"aab", true},
+				{"aaab", true},  // match at offset 1, overlapping the failed attempt at 0
+				{"aaaab", true}, // match at offset 2
+				{"xaabx", true},
+				{"ab", false},
+				{"aa", false},
+				{"", false},
+			},
+		},
+		{
+			name: "a*b", matchFn: MatchContainsAStarB,
+			cases: []testCase{
+				{"b", true},
+				{"aaab", true},
+				{"xxaab", true},
+				{strings.Repeat("a", 5000), false}, // worst case of the old O(n^2) loop
+				{"", false},
+			},
+		},
+		{
+			name: `[\x{00C0}-\x{00FF}]+`, matchFn: MatchContainsUnicode,
+			cases: []testCase{
+				{"café", true},
+				{"naïve tea", true},
+				{"plain ascii", false},
+				{"\xff\xfe", false}, // invalid UTF-8 is not in the class
+				{"", false},
 			},
 		},
 	}

@@ -11,7 +11,8 @@ import (
 // MaxStates is the maximum number of DFA states before the builder returns an error.
 const MaxStates = 10000
 
-// Build converts an NFA program (from regexp/syntax.Compile) into a DFA.
+// Build converts an NFA program (from regexp/syntax.Compile) into a DFA that
+// matches the pattern anchored at the current position (full/prefix modes).
 func Build(prog *syntax.Prog) (*DFA, error) {
 	b := &builder{
 		prog:     prog,
@@ -20,15 +21,33 @@ func Build(prog *syntax.Prog) (*DFA, error) {
 	return b.build()
 }
 
+// BuildSearch converts an NFA program into an unanchored SEARCH DFA: the start
+// closure is folded into every state, so a single left-to-right pass tracks
+// every possible match start simultaneously (the classic product construction
+// for ".*pattern"). An accepting state means "some substring ending here
+// matches". Ranges with no recorded transition restart the scan: the correct
+// target is exactly the start state, which codegen emits as the switch
+// default, so those transitions are omitted here.
+func BuildSearch(prog *syntax.Prog) (*DFA, error) {
+	b := &builder{
+		prog:     prog,
+		stateMap: make(map[string]int),
+		search:   true,
+	}
+	return b.build()
+}
+
 type builder struct {
 	prog     *syntax.Prog
 	stateMap map[string]int // serialized NFA state set -> DFA state ID
 	dfa      DFA
+	search   bool  // seed the start closure into every state (unanchored search)
+	startSet []int // epsilon closure of prog.Start
 }
 
 func (b *builder) build() (*DFA, error) {
-	startSet := b.epsilonClosure([]int{b.prog.Start})
-	b.getOrCreateState(startSet)
+	b.startSet = b.epsilonClosure([]int{b.prog.Start})
+	b.getOrCreateState(b.startSet)
 	b.dfa.Start = 0
 
 	// Worklist: process each DFA state
@@ -39,16 +58,19 @@ func (b *builder) build() (*DFA, error) {
 
 		for _, rr := range alphabet {
 			moved := b.move(nfaStates, rr.Lo, rr.Hi)
-			if len(moved) == 0 {
-				continue // dead transition, no need to record
-			}
 			nextSet := b.epsilonClosure(moved)
+			if b.search {
+				nextSet = unionSorted(nextSet, b.startSet)
+			}
 			if len(nextSet) == 0 {
-				continue
+				continue // dead transition, no need to record
 			}
 			nextID := b.getOrCreateState(nextSet)
 			if len(b.dfa.States) > MaxStates {
 				return nil, fmt.Errorf("DFA state limit exceeded (%d states); regex is too complex", MaxStates)
+			}
+			if b.search && nextID == b.dfa.Start {
+				continue // restart transition; codegen's default already does this
 			}
 			state.Transitions = append(state.Transitions, Transition{
 				Lo:   rr.Lo,
@@ -59,6 +81,29 @@ func (b *builder) build() (*DFA, error) {
 	}
 
 	return &b.dfa, nil
+}
+
+// unionSorted merges two sorted int slices without duplicates.
+func unionSorted(a, b []int) []int {
+	result := make([]int, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			result = append(result, a[i])
+			i++
+		case a[i] > b[j]:
+			result = append(result, b[j])
+			j++
+		default:
+			result = append(result, a[i])
+			i++
+			j++
+		}
+	}
+	result = append(result, a[i:]...)
+	result = append(result, b[j:]...)
+	return result
 }
 
 // nfaStatesForDFA returns the NFA states for a given DFA state ID by reverse lookup.

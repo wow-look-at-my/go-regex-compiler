@@ -79,6 +79,44 @@ func BenchmarkCompiledRegexp(b *testing.B) {
 	}
 }
 
+// containsCases benchmark unanchored (contains-mode) matchers against
+// unanchored regexp. Haystacks are large so the scan cost dominates.
+var containsCases = []struct {
+	name      string
+	pattern   string
+	generated func(string) bool
+	haystack  string
+}{
+	{"contains_literal_hit", "error", ContainsError,
+		strings.Repeat("all quiet on this line ", 400) + "error"},
+	{"contains_literal_miss", "error", ContainsError,
+		strings.Repeat("all quiet on this line ", 400)},
+	{"contains_ssn_miss", `\d{3}-\d{2}-\d{4}`, ContainsSSN,
+		strings.Repeat("phone 555-01x1 is not an ssn ", 300)},
+	// Worst case of the old restart-at-every-position loop: every start
+	// position scanned to the end of the input (O(n^2)).
+	{"contains_astarb_miss", "a*b", ContainsAStarB, strings.Repeat("a", 10000)},
+}
+
+func BenchmarkContains(b *testing.B) {
+	for _, bc := range containsCases {
+		re := regexp.MustCompile(bc.pattern)
+		if re.MatchString(bc.haystack) != bc.generated(bc.haystack) {
+			b.Fatalf("%s: generated and regexp disagree", bc.name)
+		}
+		b.Run(bc.name+"/generated", func(b *testing.B) {
+			for b.Loop() {
+				bc.generated(bc.haystack)
+			}
+		})
+		b.Run(bc.name+"/regexp", func(b *testing.B) {
+			for b.Loop() {
+				re.MatchString(bc.haystack)
+			}
+		})
+	}
+}
+
 func BenchmarkUncompiledRegexp(b *testing.B) {
 	for _, bc := range cases {
 		anchored := "^(?:" + bc.pattern + ")$"

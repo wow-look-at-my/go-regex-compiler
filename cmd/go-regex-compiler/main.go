@@ -83,8 +83,13 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Stage 2: Build DFA from NFA
-	d, err := dfa.Build(result.Prog)
+	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search
+	// DFA so the generated matcher scans the input in a single pass.
+	build := dfa.Build
+	if mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(result.Prog)
 	if err != nil {
 		return err
 	}
