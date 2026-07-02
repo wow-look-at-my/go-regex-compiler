@@ -6,7 +6,15 @@ import (
 	"regexp/syntax"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
+
+// isRuneOp reports whether op is a rune-consuming instruction whose Rune slice
+// is subject to case folding.
+func isRuneOp(op syntax.InstOp) bool {
+	return op == syntax.InstRune || op == syntax.InstRune1
+}
 
 // SubmatchOptions controls generation of the submatch function family.
 type SubmatchOptions struct {
@@ -101,7 +109,22 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 			Arg:    int(inst.Arg),
 		}
 		if len(inst.Rune) > 0 {
-			ni.Runes = formatRunes(inst.Rune)
+			runes := inst.Rune
+			// The generated runeMatch never consults the FoldCase flag, so a
+			// case-folded instruction must have its full fold orbit expanded
+			// into the emitted rune set. This matters doubly for literals:
+			// regexp/syntax stores a folded literal as its min-fold rune (e.g.
+			// (?i)a compiles to runes [65] = 'A'), so without expansion the
+			// pattern fails even on lower-case input.
+			if isRuneOp(inst.Op) && syntax.Flags(inst.Arg)&syntax.FoldCase != 0 {
+				runes = dfa.ExpandFoldCase(dfa.NormalizeRunePairs(runes))
+				if inst.Op == syntax.InstRune1 {
+					// The expansion produced [lo,hi] range pairs; opRune1's
+					// single-rune equality check no longer applies.
+					ni.OpName = "opRune"
+				}
+			}
+			ni.Runes = formatRunes(runes)
 		}
 		ctx.Instructions = append(ctx.Instructions, ni)
 	}

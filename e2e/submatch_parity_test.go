@@ -95,6 +95,26 @@ func parityCases() []submatchParityCase {
 			findFn: FindOpt2, indexFn: FindOpt2Index, namesFn: NamesOpt2,
 			inputs: []string{"y", "xy", "x", "yy"},
 		},
+		{
+			name: "casei_group", pattern: `(?i)(a)bc`,
+			findFn: FindCaseIA, indexFn: FindCaseIAIndex, namesFn: NamesCaseIA,
+			inputs: []string{"abc", "ABC", "aBc", "Abc", "abC", "xbc", "abcd", "AbC"},
+		},
+		{
+			name: "casei_hello", pattern: `(?i)(hello)`,
+			findFn: FindCaseIHello2, indexFn: FindCaseIHello2Index, namesFn: NamesCaseIHello2,
+			inputs: []string{"hello", "HELLO", "hElLo", "Hello", "hellx", "HeLLo"},
+		},
+		{
+			name: "casei_kelvin", pattern: `(?i)(k)x`,
+			findFn: FindCaseIK, indexFn: FindCaseIKIndex, namesFn: NamesCaseIK,
+			inputs: []string{"kx", "Kx", "\u212Ax", "kX", "KX", "xx", "k"},
+		},
+		{
+			name: "chain_reentry_cascade", pattern: `a{3}(ba{3})*`,
+			findFn: FindChainSub, indexFn: FindChainSubIndex, namesFn: NamesChainSub,
+			inputs: []string{"aaa", "aaabaaa", "aaabaaabaaa", "aaabaaaba", "aaab", "aaaa"},
+		},
 	}
 }
 

@@ -55,6 +55,13 @@ var namedFixtures = []namedFixture{
 		"MatchRFC", "FindRFC", "NamesRFC", "RFC3339", "FindRFC3339"},
 	{"gen_named_logfmt.go", `(?P<key>\w+)="(?P<val>[^"]*)"`, "MatchLogfmt", "FindLogfmt", "NamesLogfmt", "LogfmtField", "FindLogfmtField"},
 	{"gen_named_opt2.go", `(?P<a>x)?(?P<b>y)`, "MatchOpt2", "FindOpt2", "NamesOpt2", "Opt2", "FindOpt2Struct"},
+	// Case-folded submatch regressions: the emitted NFA rune tables must carry
+	// the full fold orbit ((?i)a is stored by regexp/syntax as 'A' only).
+	{"gen_sub_casei_a.go", `(?i)(a)bc`, "MatchCaseIA", "FindCaseIA", "NamesCaseIA", "", ""},
+	{"gen_sub_casei_hello.go", `(?i)(hello)`, "MatchCaseIHello2", "FindCaseIHello2", "NamesCaseIHello2", "", ""},
+	{"gen_sub_casei_k.go", `(?i)(k)x`, "MatchCaseIK", "FindCaseIK", "NamesCaseIK", "", ""},
+	// Chain-compression re-entry cascades into submatch via the bool gate.
+	{"gen_sub_chain.go", `a{3}(ba{3})*`, "MatchChainSub", "FindChainSub", "NamesChainSub", "", ""},
 }
 
 var fixtures = []fixture{
