@@ -43,13 +43,12 @@ const allTemplates = headerTemplate +
 	utf8LoopTemplate +
 	asciiLoopPrefixTemplate +
 	utf8LoopPrefixTemplate +
-	prefixAcceptLatchTemplate +
+	eotAcceptTemplate +
 	asciiContainsTemplate +
 	utf8ContainsTemplate +
 	statesTemplate +
 	statesContainsTemplate +
 	acceptCheckTemplate +
-	acceptIDsTemplate +
 	submatchFuncTemplate +
 	submatchIndexFuncTemplate +
 	submatchStringFuncTemplate +
@@ -128,11 +127,15 @@ const fullBodyTemplate = `
 
 // ---------- prefix body ----------
 
-// Prefix matching latches acceptance at every step (like the contains
-// templates) instead of testing only the final DFA state: a pattern such as
-// a|abc must report the prefix "a" of "ab" even though the walk ends in the
-// non-accepting "ab" state. Acceptance returns immediately; the start state
-// accepting means the empty prefix matches, so the whole body short-circuits.
+// Prefix matching latches acceptance at every boundary instead of testing
+// only the final DFA state: a pattern such as a|abc must report the prefix
+// "a" of "ab" even though the walk ends in the non-accepting "ab" state.
+// The latch runs BEFORE consuming each rune (each state's LatchStmt tests the
+// class of the upcoming rune against the state's AcceptOn mask, which is how
+// trailing assertions like \b and $ are decided), and an end-of-text check
+// after the loop covers the final boundary. A start state that accepts in
+// every context means the empty prefix always matches, so the whole body
+// short-circuits to true.
 
 const prefixBodyTemplate = `
 {{- define "prefixBody" }}
@@ -169,7 +172,9 @@ const containsBodyTemplate = `
 const asciiLoopTemplate = `
 {{- define "asciiLoop" }}
 	for i := 0; i < len(input); i++ {
+{{- if .LoopHasCases }}
 		c := input[i]
+{{- end }}
 		switch state {
 {{ template "statesASCII" . }}
 		default:
@@ -199,14 +204,16 @@ const utf8LoopTemplate = `
 const asciiLoopPrefixTemplate = `
 {{- define "asciiLoopPrefix" }}
 	for i := 0; i < len(input); i++ {
+{{- if .LoopHasCases }}
 		c := input[i]
+{{- end }}
 		switch state {
 {{ template "statesASCIIPrefix" . }}
 		default:
 			goto done
 		}
-{{- template "prefixAcceptLatch" . }}
 	}
+{{- template "eotAccept" . }}
 done:
 	return false
 {{- end -}}
@@ -217,6 +224,13 @@ const utf8LoopPrefixTemplate = `
 	for i := 0; i < len(input); {
 		r, size := utf8.DecodeRuneInString(input[i:])
 		if r == utf8.RuneError && size == 1 {
+{{- if gt (len .OtherLatchIDs) 0 }}
+			switch state {
+			case {{ range $i, $id := .OtherLatchIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+				return true
+			default:
+			}
+{{- end }}
 			goto done
 		}
 		switch state {
@@ -224,27 +238,36 @@ const utf8LoopPrefixTemplate = `
 		default:
 			goto done
 		}
-{{- template "prefixAcceptLatch" . }}
 		i += size
 	}
+{{- template "eotAccept" . }}
 done:
 	return false
 {{- end -}}
 `
 
-const prefixAcceptLatchTemplate = `
-{{- define "prefixAcceptLatch" }}
+// eotAccept returns true when the walk consumed the whole input and the final
+// state accepts at end of text.
+const eotAcceptTemplate = `
+{{- define "eotAccept" }}
 {{- if gt (len .AcceptIDs) 0 }}
-		switch state {
-		case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-			return true
-		default:
-		}
+	switch state {
+	case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+		return true
+	default:
+	}
 {{- end }}
 {{- end -}}
 `
 
 // ---------- contains loops ----------
+
+// The contains loops latch acceptance BEFORE consuming each rune (each
+// state's LatchStmt tests the upcoming rune's class against the state's
+// AcceptOn mask) and check end-of-text acceptance after an inner walk that
+// consumed the rest of the input. The seed statements pick the start state
+// for the boundary context preceding the start position (relevant only when
+// the pattern carries assertions).
 
 const asciiContainsTemplate = `
 {{- define "asciiContains" }}
@@ -252,14 +275,20 @@ const asciiContainsTemplate = `
 	return true
 {{- else }}
 	for start := 0; start <= len(input); start++ {
-		state := {{ .Start }}
+{{- if .HasAssertions }}
+		if start < len(input) && input[start]&0xC0 == 0x80 {
+			continue // do not start inside a multi-byte rune
+		}
+{{- end }}
+{{ .ContainsSeed }}
 {{- range chainIndices .NumChains }}
 		chainCount{{ . }} := 0
 {{- end }}
-		matched := false
+		dead := false
 		for i := start; i < len(input); i++ {
+{{- if .LoopHasCases }}
 			c := input[i]
-			dead := false
+{{- end }}
 			switch state {
 {{ template "statesASCIIContains" . }}
 			default:
@@ -268,15 +297,16 @@ const asciiContainsTemplate = `
 			if dead {
 				break
 			}
+		}
+{{- if gt (len .AcceptIDs) 0 }}
+		if !dead {
 			switch state {
-{{ template "acceptIDs" . }}
-				matched = true
+			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+				return true
 			default:
 			}
 		}
-		if matched {
-			return true
-		}
+{{- end }}
 	}
 	return false
 {{- end }}
@@ -289,17 +319,24 @@ const utf8ContainsTemplate = `
 	return true
 {{- else }}
 	for start := 0; start <= len(input); {
-		state := {{ .Start }}
+{{ .ContainsSeed }}
 {{- range chainIndices .NumChains }}
 		chainCount{{ . }} := 0
 {{- end }}
-		matched := false
+		dead := false
 		for i := start; i < len(input); {
 			r, size := utf8.DecodeRuneInString(input[i:])
 			if r == utf8.RuneError && size == 1 {
+{{- if gt (len .OtherLatchIDs) 0 }}
+				switch state {
+				case {{ range $i, $id := .OtherLatchIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+					return true
+				default:
+				}
+{{- end }}
+				dead = true
 				break
 			}
-			dead := false
 			switch state {
 {{ template "statesRuneContains" . }}
 			default:
@@ -308,16 +345,17 @@ const utf8ContainsTemplate = `
 			if dead {
 				break
 			}
-			switch state {
-{{ template "acceptIDs" . }}
-				matched = true
-			default:
-			}
 			i += size
 		}
-		if matched {
-			return true
+{{- if gt (len .AcceptIDs) 0 }}
+		if !dead {
+			switch state {
+			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+				return true
+			default:
+			}
 		}
+{{- end }}
 		if start < len(input) {
 			_, size := utf8.DecodeRuneInString(input[start:])
 			start += size
@@ -336,22 +374,34 @@ const utf8ContainsTemplate = `
 // Byte vs rune condition and the no-match action are passed as parameters.
 
 const statesTemplate = `
-{{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
-{{- define "statesASCIIPrefix" }}{{ template "statesInner" (args . "byte" "goto done") }}{{ end }}
-{{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
-{{- define "statesRunePrefix" }}{{ template "statesInner" (args . "rune" "goto done") }}{{ end }}
+{{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false" false) }}{{ end }}
+{{- define "statesASCIIPrefix" }}{{ template "statesInner" (args . "byte" "goto done" true) }}{{ end }}
+{{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false" false) }}{{ end }}
+{{- define "statesRunePrefix" }}{{ template "statesInner" (args . "rune" "goto done" true) }}{{ end }}
 {{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
 {{- $noMatch := index . 2 -}}
-{{- range $ctx.States }}{{ if isLive . }}
+{{- $latch := index . 3 -}}
+{{- range $ctx.States }}{{ $doLatch := and $latch (ne .LatchStmt "") }}{{ if or (isLive .) $doLatch }}
 		case {{ .ID }}:
+{{- if and $doLatch (eq .LatchStmt "return true") }}
+			return true
+{{- else }}
+{{- if $doLatch }}
+			{{ .LatchStmt }}
+{{- end }}
+{{- if isLive . }}
 			switch {
 {{- range groupTransitions $condKind . }}
 			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ $noMatch }}
 			}
+{{- else }}
+			{{ $noMatch }}
+{{- end }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -362,14 +412,25 @@ const statesContainsTemplate = `
 {{- define "statesContainsInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
-{{- range $ctx.States }}{{ if isLive . }}
+{{- range $ctx.States }}{{ if or (isLive .) (ne .LatchStmt "") }}
 			case {{ .ID }}:
+{{- if eq .LatchStmt "return true" }}
+				return true
+{{- else }}
+{{- if ne .LatchStmt "" }}
+				{{ .LatchStmt }}
+{{- end }}
+{{- if isLive . }}
 				switch {
 {{- range groupTransitions $condKind . }}
 				case {{ .Cond }}: {{ .Body }}
 {{- end }}
 				default: dead = true
 				}
+{{- else }}
+				dead = true
+{{- end }}
+{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -389,14 +450,6 @@ const acceptCheckTemplate = `
 	default:
 		return false
 	}
-{{- end }}
-{{- end -}}
-`
-
-const acceptIDsTemplate = `
-{{- define "acceptIDs" -}}
-{{- if gt (len .AcceptIDs) 0 }}
-			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
 {{- end }}
 {{- end -}}
 `

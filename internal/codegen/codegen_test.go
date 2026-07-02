@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"bytes"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"regexp/syntax"
@@ -488,6 +489,25 @@ func TestGenerateChainCompression(t *testing.T) {
 
 	lines := strings.Count(output, "\n")
 	assert.Less(t, lines, 200, "generated code should be compact with chain compression, got %d lines", lines)
+}
+
+func TestGenerateAssertionPatternsCompile(t *testing.T) {
+	// Empty-width assertion patterns must produce valid Go in every mode
+	// (including the degenerate shapes: no live states, no in-loop cases,
+	// unconditional latches).
+	patterns := []string{
+		`a\bb`, `\bfoo\b`, `^a`, `a$`, `$`, `^`, `\b`, `\B`, `\A[ab]+\z`,
+		`(?m)a$`, `(?m)^b`, `a\zb`, `\b\s`, `a(?:\b)+b`, `(?m)^$`, `\bé\b`,
+	}
+	for _, p := range patterns {
+		for _, mode := range []MatchMode{MatchFull, MatchPrefix, MatchContains} {
+			t.Run(fmt.Sprintf("%s_%d", p, mode), func(t *testing.T) {
+				out := generateWithMode(t, p, "Match", mode)
+				assertValidGo(t, out)
+				assertNoUnusedImports(t, out)
+			})
+		}
+	}
 }
 
 func TestGenerateChainReentryReset(t *testing.T) {

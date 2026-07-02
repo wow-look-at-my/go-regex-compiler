@@ -122,28 +122,87 @@ func TestBuildCaseInsensitive(t *testing.T) {
 	assert.Equal(t, 1, countAccepting(d), "exactly one accepting state")
 }
 
-func TestEpsilonClosure(t *testing.T) {
+func TestPendingClosure(t *testing.T) {
 	prog := parse(t, "a")
 	b := &builder{
 		prog:     prog,
-		stateMap: make(map[string]int),
+		stateMap: make(map[stateKey]int),
 	}
 
-	closure := b.epsilonClosure([]int{prog.Start})
-	assert.NotEmpty(t, closure, "epsilon closure of start state should not be empty")
-	assert.Contains(t, closure, prog.Start, "epsilon closure should contain start state")
+	closure := b.pendingClosure([]int{prog.Start})
+	assert.NotEmpty(t, closure, "pending closure of start state should not be empty")
+	assert.Contains(t, closure, prog.Start, "pending closure should contain start state")
+}
+
+func TestBuildWordBoundaryNeverSatisfiedInsideWord(t *testing.T) {
+	// a\bb has no satisfiable path: both neighbours of \b are word runes.
+	d, err := Build(parse(t, `a\bb`))
+	require.NoError(t, err)
+	assert.True(t, d.HasAssertions)
+	assert.False(t, hasAcceptingState(d), `a\bb must have no accepting state`)
+}
+
+func TestBuildDollarAcceptMasks(t *testing.T) {
+	nonNeverMask := func(d *DFA) AcceptMask {
+		for _, s := range d.States {
+			if s.AcceptOn != AcceptNever {
+				return s.AcceptOn
+			}
+		}
+		return AcceptNever
+	}
+
+	d, err := Build(parse(t, `a$`))
+	require.NoError(t, err)
+	assert.Equal(t, AcceptOnEOT, nonNeverMask(d), "$ accepts only at end of text")
+
+	d, err = Build(parse(t, `(?m)a$`))
+	require.NoError(t, err)
+	assert.Equal(t, AcceptOnEOT|AcceptOnNL, nonNeverMask(d),
+		"(?m)$ accepts at end of text or before a newline")
+}
+
+func TestBuildStartForContexts(t *testing.T) {
+	// \bfoo can only begin matching where a word boundary holds, so the start
+	// state after a word rune must differ from the begin-of-text one.
+	d, err := Build(parse(t, `\bfoo`))
+	require.NoError(t, err)
+	assert.NotEmpty(t, d.States[d.StartFor[ClassBegin]].Transitions,
+		"begin-of-text start must be able to consume 'f'")
+	assert.Empty(t, d.States[d.StartFor[ClassWord]].Transitions,
+		"after a word rune there is no boundary before 'f'")
+	assert.Equal(t, d.Start, d.StartFor[ClassBegin])
+
+	// Assertion-free patterns share one start state across all contexts.
+	d2, err := Build(parse(t, `foo`))
+	require.NoError(t, err)
+	assert.False(t, d2.HasAssertions)
+	for _, id := range d2.StartFor {
+		assert.Equal(t, d2.Start, id)
+	}
+}
+
+func TestBuildMidPatternAnchorNeverMatches(t *testing.T) {
+	// a$b and a^b can never match without (?m).
+	for _, p := range []string{`a$b`, `a^b`, `a\Ab`, `a\zb`} {
+		t.Run(p, func(t *testing.T) {
+			d, err := Build(parse(t, p))
+			require.NoError(t, err)
+			assert.False(t, hasAcceptingState(d), "%s must have no accepting state", p)
+		})
+	}
 }
 
 func TestExpandFoldCaseNoCap(t *testing.T) {
 	// U+212A (KELVIN SIGN) sits at offset 0x12A (> 256) from U+2000; its fold
 	// orbit {k, K} must not be dropped by any per-range expansion cap.
-	got := expandFoldCase([]rune{0x2000, 0x2200})
+	got := ExpandFoldCase([]rune{0x2000, 0x2200})
 	assert.True(t, rangesContain(got, 'k'), "fold expansion must include 'k' (fold of U+212A)")
 	assert.True(t, rangesContain(got, 'K'), "fold expansion must include 'K' (fold of U+212A)")
 	assert.True(t, rangesContain(got, 0x2100), "original range must be preserved")
 
 	// A range entirely outside the foldable band expands to itself.
-	assert.Equal(t, []rune{0x30000, 0x30010}, expandFoldCase([]rune{0x30000, 0x30010}))
+	assert.Equal(t, []rune{0x30000, 0x30010}, ExpandFoldCase([]rune{0x30000, 0x30010}))
 }
 
 func rangesContain(pairs []rune, r rune) bool {

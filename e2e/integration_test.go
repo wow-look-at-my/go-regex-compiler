@@ -372,6 +372,113 @@ func TestIntegrationContains(t *testing.T) {
 	}
 }
 
+// TestIntegrationAssertions covers empty-width assertions (\b \B ^ $ \A \z,
+// including (?m)) across match modes; expectations mirror stdlib regexp with
+// the mode's anchoring (^(?:p)$ / ^(?:p) / p).
+func TestIntegrationAssertions(t *testing.T) {
+	tests := []struct {
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
+	}{
+		{
+			// \b between two word runes can never hold.
+			name: `full a\bb`, matchFn: MatchABoundaryB,
+			cases: []testCase{
+				{"ab", false},
+				{"a b", false},
+				{"a", false},
+				{"", false},
+			},
+		},
+		{
+			// Full match: $ (?m) may accept before a newline, but full mode
+			// still has to consume the whole input.
+			name: `full (?m)a$`, matchFn: MatchMLineADollar,
+			cases: []testCase{
+				{"a", true},
+				{"ab", false},
+				{"a\n", false}, // the \n is left unconsumed
+				{"b", false},
+				{"", false},
+			},
+		},
+		{
+			// ^(?:$) matches only the empty prefix at end of text.
+			name: `prefix $`, matchFn: MatchPrefixDollar,
+			cases: []testCase{
+				{"", true},
+				{"a", false},
+				{"\n", false},
+			},
+		},
+		{
+			name: `prefix a$`, matchFn: MatchPrefixADollar,
+			cases: []testCase{
+				{"a", true},
+				{"ab", false},
+				{"a\n", false},
+				{"", false},
+			},
+		},
+		{
+			name: `prefix foo\b`, matchFn: MatchPrefixFooB,
+			cases: []testCase{
+				{"foo", true},
+				{"foo bar", true},
+				{"foo!", true},
+				{"foobar", false},
+				{"fo", false},
+				{"", false},
+			},
+		},
+		{
+			// ^a anchors to the start of text even in contains mode.
+			name: `contains ^a`, matchFn: MatchContainsCaretA,
+			cases: []testCase{
+				{"a", true},
+				{"abc", true},
+				{"ba", false},
+				{"\na", false},
+				{"", false},
+			},
+		},
+		{
+			name: `contains \bfoo\b`, matchFn: MatchContainsWordB,
+			cases: []testCase{
+				{"foo", true},
+				{"a foo b", true},
+				{"foo!", true},
+				{"!foo", true},
+				{"foobar", false},
+				{"xfoo", false},
+				{"barfoobaz", false},
+				{"", false},
+			},
+		},
+		{
+			name: `contains (?m)^b`, matchFn: MatchContainsMLineB,
+			cases: []testCase{
+				{"b", true},
+				{"a\nb", true},
+				{"\nb", true},
+				{"ab", false},
+				{"a b", false},
+				{"", false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				got := tt.matchFn(tc.input)
+				assert.Equal(t, tc.match, got, "input %q", tc.input)
+			}
+		})
+	}
+}
+
 type submatchCase struct {
 	input  string
 	groups []string // nil means no match, else groups[0]=full match, groups[1..]=captures

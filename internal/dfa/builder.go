@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp/syntax"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -12,41 +13,81 @@ import (
 const MaxStates = 10000
 
 // Build converts an NFA program (from regexp/syntax.Compile) into a DFA.
+//
+// Empty-width assertions are handled by construction: an InstEmptyWidth is
+// never crossed eagerly. Instead it stays PENDING in the subset, each DFA
+// state additionally records the boundary class of the rune that led into it
+// (word / newline / other / begin-of-text), and the pending assertions are
+// resolved at step time against (before-class, class of the consumed rune).
+// Acceptance likewise depends on the class of the NEXT rune, captured in the
+// per-state AcceptOn mask; the alphabet is split at '\n' and the ASCII
+// word-character ranges so every transition range resolves uniformly.
 func Build(prog *syntax.Prog) (*DFA, error) {
 	b := &builder{
 		prog:     prog,
-		stateMap: make(map[string]int),
+		stateMap: make(map[stateKey]int),
 	}
+	for i := range prog.Inst {
+		if prog.Inst[i].Op == syntax.InstEmptyWidth {
+			b.hasEmpty = true
+			break
+		}
+	}
+	b.dfa.HasAssertions = b.hasEmpty
 	return b.build()
+}
+
+// stateKey identifies a DFA state: the serialized pending NFA set plus the
+// boundary class before the current position (canonicalized to ClassOther
+// when the set holds no pending assertions, so context-independent subgraphs
+// dedupe).
+type stateKey struct {
+	set string
+	ctx int
 }
 
 type builder struct {
 	prog     *syntax.Prog
-	stateMap map[string]int // serialized NFA state set -> DFA state ID
+	hasEmpty bool // prog contains any InstEmptyWidth
+	stateMap map[stateKey]int
+	sets     [][]int // pending NFA set per DFA state ID
+	ctxs     []int   // before-boundary class per DFA state ID
 	dfa      DFA
 }
 
 func (b *builder) build() (*DFA, error) {
-	startSet := b.epsilonClosure([]int{b.prog.Start})
-	b.getOrCreateState(startSet)
-	b.dfa.Start = 0
+	startSet := b.pendingClosure([]int{b.prog.Start})
+	// ClassBegin first so the begin-of-text start state keeps ID 0.
+	b.dfa.Start = b.getOrCreateState(startSet, ClassBegin)
+	b.dfa.StartFor[ClassBegin] = b.dfa.Start
+	for _, cls := range []int{ClassOther, ClassWord, ClassNL} {
+		b.dfa.StartFor[cls] = b.getOrCreateState(startSet, cls)
+	}
 
 	// Worklist: process each DFA state
 	for i := 0; i < len(b.dfa.States); i++ {
 		state := b.dfa.States[i]
-		alphabet := b.computeAlphabet(startSetFromState(state, b))
-		nfaStates := b.nfaStatesForDFA(state.ID)
+		set, before := b.sets[i], b.ctxs[i]
+		pendingEmpty := setHasEmptyWidth(b.prog, set)
+		alphabet := b.computeAlphabet(b.resolveAll(set))
 
 		for _, rr := range alphabet {
-			moved := b.move(nfaStates, rr.Lo, rr.Hi)
+			live := set
+			if pendingEmpty {
+				// Every range is class-uniform (computeAlphabet splits at the
+				// class edges whenever assertions exist), so the boundary
+				// context of the whole range is that of its low rune.
+				live = b.resolve(set, emptyOpsFor(before, classOfRune(rr.Lo)))
+			}
+			moved := b.move(live, rr.Lo, rr.Hi)
 			if len(moved) == 0 {
 				continue // dead transition, no need to record
 			}
-			nextSet := b.epsilonClosure(moved)
+			nextSet := b.pendingClosure(moved)
 			if len(nextSet) == 0 {
 				continue
 			}
-			nextID := b.getOrCreateState(nextSet)
+			nextID := b.getOrCreateState(nextSet, classOfRune(rr.Lo))
 			if len(b.dfa.States) > MaxStates {
 				return nil, fmt.Errorf("DFA state limit exceeded (%d states); regex is too complex", MaxStates)
 			}
@@ -61,19 +102,11 @@ func (b *builder) build() (*DFA, error) {
 	return &b.dfa, nil
 }
 
-// nfaStatesForDFA returns the NFA states for a given DFA state ID by reverse lookup.
-func (b *builder) nfaStatesForDFA(id int) []int {
-	for key, stateID := range b.stateMap {
-		if stateID == id {
-			return deserializeStateSet(key)
-		}
-	}
-	return nil
-}
-
-// epsilonClosure computes all NFA states reachable from the given states
-// via epsilon transitions (InstAlt, InstAltMatch, InstNop, InstCapture, InstEmptyWidth).
-func (b *builder) epsilonClosure(states []int) []int {
+// pendingClosure computes all NFA states reachable via unconditional epsilon
+// transitions (InstAlt, InstAltMatch, InstNop, InstCapture). InstEmptyWidth
+// is NOT crossed: it stays pending in the set until the surrounding runes are
+// known (see resolve).
+func (b *builder) pendingClosure(states []int) []int {
 	visited := make(map[int]bool)
 	stack := append([]int{}, states...)
 
@@ -94,23 +127,122 @@ func (b *builder) epsilonClosure(states []int) []int {
 			stack = append(stack, int(inst.Out), int(inst.Arg))
 		case syntax.InstNop, syntax.InstCapture:
 			stack = append(stack, int(inst.Out))
-		case syntax.InstEmptyWidth:
-			// For full-match mode, we follow through empty-width assertions.
-			// ^/$ are implicitly satisfied since we match the entire string.
-			stack = append(stack, int(inst.Out))
-		case syntax.InstMatch, syntax.InstFail,
+		case syntax.InstEmptyWidth, syntax.InstMatch, syntax.InstFail,
 			syntax.InstRune, syntax.InstRune1,
 			syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
-			// These are terminal for epsilon closure
+			// Terminal for the pending closure.
 		}
 	}
 
+	return sortedSet(visited)
+}
+
+// resolve expands a pending set at a concrete boundary: an InstEmptyWidth
+// whose assertions are all satisfied by ops is crossed, everything else is
+// kept as-is.
+func (b *builder) resolve(set []int, ops syntax.EmptyOp) []int {
+	visited := make(map[int]bool)
+	stack := append([]int{}, set...)
+
+	for len(stack) > 0 {
+		pc := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if visited[pc] {
+			continue
+		}
+		if pc < 0 || pc >= len(b.prog.Inst) {
+			continue
+		}
+		visited[pc] = true
+
+		inst := &b.prog.Inst[pc]
+		switch inst.Op {
+		case syntax.InstAlt, syntax.InstAltMatch:
+			stack = append(stack, int(inst.Out), int(inst.Arg))
+		case syntax.InstNop, syntax.InstCapture:
+			stack = append(stack, int(inst.Out))
+		case syntax.InstEmptyWidth:
+			if syntax.EmptyOp(inst.Arg)&^ops == 0 {
+				stack = append(stack, int(inst.Out))
+			}
+		}
+	}
+
+	return sortedSet(visited)
+}
+
+// resolveAll crosses every pending assertion regardless of context. Used to
+// compute the alphabet: it over-approximates the reachable rune instructions.
+func (b *builder) resolveAll(set []int) []int {
+	if !b.hasEmpty {
+		return set
+	}
+	const all = syntax.EmptyBeginLine | syntax.EmptyEndLine |
+		syntax.EmptyBeginText | syntax.EmptyEndText |
+		syntax.EmptyWordBoundary | syntax.EmptyNoWordBoundary
+	return b.resolve(set, all)
+}
+
+func sortedSet(visited map[int]bool) []int {
 	result := make([]int, 0, len(visited))
 	for pc := range visited {
 		result = append(result, pc)
 	}
 	sort.Ints(result)
 	return result
+}
+
+// classOfRune classifies a rune for assertion evaluation. Word characters
+// follow regexp's ASCII-only \b semantics (syntax.IsWordChar).
+func classOfRune(r rune) int {
+	switch {
+	case r == '\n':
+		return ClassNL
+	case syntax.IsWordChar(r):
+		return ClassWord
+	default:
+		return ClassOther
+	}
+}
+
+// classRune returns a representative rune for a boundary class, with
+// ClassBegin mapping to -1 (the text edge, as syntax.EmptyOpContext expects).
+func classRune(class int) rune {
+	switch class {
+	case ClassWord:
+		return 'a'
+	case ClassNL:
+		return '\n'
+	case ClassBegin:
+		return -1
+	default:
+		return ' '
+	}
+}
+
+// emptyOpsFor returns the set of empty-width assertions satisfied at a
+// boundary whose neighbouring runes have the given classes. Delegates to
+// regexp/syntax for exact stdlib parity.
+func emptyOpsFor(before, after int) syntax.EmptyOp {
+	return syntax.EmptyOpContext(classRune(before), classRune(after))
+}
+
+func setHasEmptyWidth(prog *syntax.Prog, set []int) bool {
+	for _, pc := range set {
+		if pc >= 0 && pc < len(prog.Inst) && prog.Inst[pc].Op == syntax.InstEmptyWidth {
+			return true
+		}
+	}
+	return false
+}
+
+func containsMatch(prog *syntax.Prog, set []int) bool {
+	for _, pc := range set {
+		if pc >= 0 && pc < len(prog.Inst) && prog.Inst[pc].Op == syntax.InstMatch {
+			return true
+		}
+	}
+	return false
 }
 
 // move computes which NFA states are reached from the given state set
@@ -143,17 +275,10 @@ func (b *builder) move(states []int, lo, hi rune) []int {
 		case syntax.InstRuneAny:
 			result = append(result, int(inst.Out))
 		case syntax.InstRuneAnyNotNL:
-			// Matches any rune except \n
+			// Matches any rune except \n. The alphabet is partitioned at \n
+			// boundaries, so a range either is exactly [\n,\n] or excludes it.
 			if !(lo <= '\n' && '\n' <= hi) {
 				result = append(result, int(inst.Out))
-			} else if lo < '\n' || hi > '\n' {
-				// The range partially overlaps \n. Since we partition cleanly,
-				// this case means our partition range doesn't fully contain \n only,
-				// so we can include it (the partition range won't contain \n).
-				// Actually, if the partition includes \n, we should NOT match.
-				// But if the partition is wider, the partitioning should have split
-				// at \n boundaries. So if lo <= '\n' && '\n' <= hi, skip it.
-				// This case is already handled above.
 			}
 		}
 	}
@@ -162,11 +287,11 @@ func (b *builder) move(states []int, lo, hi rune) []int {
 
 // runeMatchesRange checks if an InstRune instruction can match any rune in [lo, hi].
 func (b *builder) runeMatchesRange(inst *syntax.Inst, lo, hi rune) bool {
-	runes := normalizeRunePairs(inst.Rune)
+	runes := NormalizeRunePairs(inst.Rune)
 	foldCase := syntax.Flags(inst.Arg)&syntax.FoldCase != 0
 
 	if foldCase {
-		runes = expandFoldCase(runes)
+		runes = ExpandFoldCase(runes)
 	}
 
 	for i := 0; i < len(runes); i += 2 {
@@ -178,10 +303,10 @@ func (b *builder) runeMatchesRange(inst *syntax.Inst, lo, hi rune) bool {
 	return false
 }
 
-// normalizeRunePairs ensures the rune slice is in pair format [lo, hi, ...].
+// NormalizeRunePairs ensures the rune slice is in pair format [lo, hi, ...].
 // When Rune has odd length (e.g., a single rune from a literal with FoldCase),
 // each unpaired rune is treated as a [r, r] range.
-func normalizeRunePairs(runes []rune) []rune {
+func NormalizeRunePairs(runes []rune) []rune {
 	if len(runes)%2 == 0 {
 		return runes
 	}
@@ -197,7 +322,11 @@ func normalizeRunePairs(runes []rune) []rune {
 }
 
 // computeAlphabet computes the minimal set of non-overlapping rune ranges
-// that partition the input alphabet for the given NFA state set.
+// that partition the input alphabet for the given NFA state set. When the
+// program contains empty-width assertions, the partition is additionally
+// split at '\n' and the ASCII word-character ranges so that assertion
+// resolution (and the boundary class recorded on the target state) is uniform
+// across each range.
 func (b *builder) computeAlphabet(states []int) []RuneRange {
 	var boundaries []rune
 
@@ -216,9 +345,9 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 				}
 			}
 		case syntax.InstRune:
-			runes := normalizeRunePairs(inst.Rune)
+			runes := NormalizeRunePairs(inst.Rune)
 			if syntax.Flags(inst.Arg)&syntax.FoldCase != 0 {
-				runes = expandFoldCase(runes)
+				runes = ExpandFoldCase(runes)
 			}
 			for i := 0; i < len(runes); i += 2 {
 				boundaries = append(boundaries, runes[i], runes[i+1]+1)
@@ -232,6 +361,11 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 
 	if len(boundaries) == 0 {
 		return nil
+	}
+
+	if b.hasEmpty {
+		boundaries = append(boundaries,
+			'\n', '\n'+1, '0', '9'+1, 'A', 'Z'+1, '_', '_'+1, 'a', 'z'+1)
 	}
 
 	// Sort and deduplicate boundaries
@@ -258,35 +392,49 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 	return ranges
 }
 
-// startSetFromState returns the NFA states for a given DFA state.
-func startSetFromState(state *State, b *builder) []int {
-	return b.nfaStatesForDFA(state.ID)
-}
-
-// getOrCreateState returns the DFA state ID for the given NFA state set,
-// creating a new DFA state if necessary.
-func (b *builder) getOrCreateState(nfaStates []int) int {
-	key := serializeStateSet(nfaStates)
+// getOrCreateState returns the DFA state ID for the given pending NFA set and
+// before-boundary class, creating a new DFA state if necessary.
+func (b *builder) getOrCreateState(nfaStates []int, ctx int) int {
+	if !setHasEmptyWidth(b.prog, nfaStates) {
+		// The boundary context only influences pending assertions;
+		// canonicalize so assertion-free subgraphs dedupe across contexts.
+		ctx = ClassOther
+	}
+	key := stateKey{set: serializeStateSet(nfaStates), ctx: ctx}
 	if id, ok := b.stateMap[key]; ok {
 		return id
 	}
 
 	id := len(b.dfa.States)
 	b.stateMap[key] = id
+	b.sets = append(b.sets, nfaStates)
+	b.ctxs = append(b.ctxs, ctx)
 
-	accept := false
-	for _, pc := range nfaStates {
-		if pc >= 0 && pc < len(b.prog.Inst) && b.prog.Inst[pc].Op == syntax.InstMatch {
-			accept = true
-			break
-		}
-	}
-
+	acceptOn := b.acceptMask(nfaStates, ctx)
 	b.dfa.States = append(b.dfa.States, &State{
-		ID:     id,
-		Accept: accept,
+		ID:       id,
+		Accept:   acceptOn&AcceptOnEOT != 0,
+		AcceptOn: acceptOn,
 	})
 	return id
+}
+
+// acceptMask computes, per class of the next rune (or end of text), whether
+// the pending set reaches InstMatch at the current boundary.
+func (b *builder) acceptMask(set []int, ctx int) AcceptMask {
+	if !setHasEmptyWidth(b.prog, set) {
+		if containsMatch(b.prog, set) {
+			return AcceptAlways
+		}
+		return AcceptNever
+	}
+	var m AcceptMask
+	for _, after := range []int{ClassOther, ClassWord, ClassNL, ClassBegin} {
+		if containsMatch(b.prog, b.resolve(set, emptyOpsFor(ctx, after))) {
+			m |= 1 << after
+		}
+	}
+	return m
 }
 
 func serializeStateSet(states []int) string {
@@ -295,21 +443,9 @@ func serializeStateSet(states []int) string {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		fmt.Fprintf(&sb, "%d", s)
+		sb.WriteString(strconv.Itoa(s))
 	}
 	return sb.String()
-}
-
-func deserializeStateSet(key string) []int {
-	if key == "" {
-		return nil
-	}
-	parts := strings.Split(key, ",")
-	result := make([]int, len(parts))
-	for i, p := range parts {
-		fmt.Sscanf(p, "%d", &result[i])
-	}
-	return result
 }
 
 // Unicode simple case folding only exists inside [minFold, maxFold] (the same
@@ -319,11 +455,11 @@ const (
 	maxFold = 0x1e943
 )
 
-// expandFoldCase expands rune range pairs to include all case-folded
+// ExpandFoldCase expands rune range pairs to include all case-folded
 // equivalents. The scan is clamped to the foldable band, which bounds the
 // work without dropping any fold (a previous version silently capped
 // expansion at 256 runes per range, losing folds at offsets >= 256).
-func expandFoldCase(runes []rune) []rune {
+func ExpandFoldCase(runes []rune) []rune {
 	var expanded []rune
 	expanded = append(expanded, runes...)
 

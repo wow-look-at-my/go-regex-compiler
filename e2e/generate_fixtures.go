@@ -107,6 +107,16 @@ var fixtures = []fixture{
 	// non-matching continuation exists (prefix "a" of "ab" for a|abc).
 	{"gen_prefix_alt.go", "a|abc", "MatchPrefixAlt", codegen.MatchPrefix, false, ""},
 
+	// Empty-width assertions (evaluated by DFA construction; audit item A).
+	{"gen_full_abb.go", `a\bb`, "MatchABoundaryB", codegen.MatchFull, false, ""},
+	{"gen_full_mline_adollar.go", `(?m)a$`, "MatchMLineADollar", codegen.MatchFull, false, ""},
+	{"gen_prefix_dollar.go", `$`, "MatchPrefixDollar", codegen.MatchPrefix, false, ""},
+	{"gen_prefix_adollar.go", `a$`, "MatchPrefixADollar", codegen.MatchPrefix, false, ""},
+	{"gen_prefix_foob.go", `foo\b`, "MatchPrefixFooB", codegen.MatchPrefix, false, ""},
+	{"gen_contains_careta.go", `^a`, "MatchContainsCaretA", codegen.MatchContains, false, ""},
+	{"gen_contains_wordb.go", `\bfoo\b`, "MatchContainsWordB", codegen.MatchContains, false, ""},
+	{"gen_contains_mlineb.go", `(?m)^b`, "MatchContainsMLineB", codegen.MatchContains, false, ""},
+
 	// Contains mode
 	{"gen_contains_charclass.go", "[a-z]+", "MatchContainsCharClass", codegen.MatchContains, false, ""},
 	{"gen_contains_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchContainsSSN", codegen.MatchContains, false, ""},

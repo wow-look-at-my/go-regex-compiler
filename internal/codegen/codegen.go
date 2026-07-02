@@ -31,6 +31,10 @@ type Options struct {
 	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
 }
 
+// latchLoopMask are the AcceptOn bits decidable inside the matching loop
+// (i.e. by looking at the upcoming rune); AcceptOnEOT is decided after it.
+const latchLoopMask = dfa.AcceptOnOther | dfa.AcceptOnWord | dfa.AcceptOnNL
+
 // templateContext holds all data needed by the top-level templates.
 type templateContext struct {
 	PackageName        string
@@ -41,20 +45,26 @@ type templateContext struct {
 	ASCII              bool
 	Start              int
 	States             []templateState
-	AcceptIDs          []int
-	EdgeCase           bool // single accepting state with no transitions
-	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts       bool // start state is accepting (for contains early-return)
+	AcceptIDs          []int // states accepting at end of text
+	OtherLatchIDs      []int // states accepting before a non-word, non-newline rune
+	EdgeCase           bool  // single start state with no transitions
+	EdgeCaseAlwaysTrue bool  // edge case AND the matcher is trivially true
+	StartAccepts       bool  // prefix/contains matcher is trivially true
 	NumChains          int
 	HasRanges          bool
-	NeedMatchImport    bool // body uses match.InRange
-	NeedUTF8Import     bool // body uses utf8.DecodeRuneInString
+	HasAssertions      bool   // pattern contains empty-width assertions
+	ContainsSeed       string // statements seeding `state` per start position (contains mode)
+	NeedMatchImport    bool   // body uses match.InRange
+	NeedUTF8Import     bool   // body uses utf8.DecodeRuneInString
+	LoopHasCases       bool   // the state switch has at least one case (i.e. `c` is used)
 }
 
 // templateState mirrors dfa.State for use in templates.
 type templateState struct {
 	ID            int
-	Accept        bool
+	Accept        bool // accepts at end of text
+	AcceptOn      dfa.AcceptMask
+	LatchStmt     string // acceptance latch emitted before stepping (prefix/contains)
 	Transitions   []templateTransition
 	IsChain       bool
 	ChainMaxCount int
@@ -95,8 +105,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 }
 
 func buildContext(d *dfa.DFA, opts Options) templateContext {
-	ascii := isASCIIOnly(d)
-
 	var modeStr string
 	switch opts.Mode {
 	case MatchPrefix:
@@ -108,42 +116,125 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	ctx := templateContext{
-		PackageName: opts.PackageName,
-		FuncName:    opts.FuncName,
-		Regex:       opts.Regex,
-		ModeComment: matchModeComment(opts.Mode),
-		Mode:        modeStr,
-		ASCII:       ascii,
-		Start:       d.Start,
+		PackageName:   opts.PackageName,
+		FuncName:      opts.FuncName,
+		Regex:         opts.Regex,
+		ModeComment:   matchModeComment(opts.Mode),
+		Mode:          modeStr,
+		Start:         d.Start,
+		HasAssertions: d.HasAssertions,
 	}
 
+	// Prune unreachable states: full/prefix matching starts at d.Start only,
+	// while contains matching can start at any per-context start state. The
+	// builder always materializes all four start states, so modes that use
+	// fewer roots would otherwise emit dead switch cases.
+	roots := []int{d.Start}
+	if opts.Mode == MatchContains {
+		roots = d.StartFor[:]
+	}
+	reachable := reachableStates(d, roots)
+
 	for _, s := range d.States {
-		ts := templateState{ID: s.ID, Accept: s.Accept}
+		if !reachable[s.ID] {
+			continue
+		}
+		ts := templateState{ID: s.ID, Accept: s.Accept, AcceptOn: s.AcceptOn}
 		for _, tr := range s.Transitions {
 			ts.Transitions = append(ts.Transitions, templateTransition{
 				Lo: tr.Lo, Hi: tr.Hi, Next: tr.Next,
 			})
 		}
 		ctx.States = append(ctx.States, ts)
-		if s.Accept {
+		if s.AcceptOn&dfa.AcceptOnEOT != 0 {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
+		}
+		if s.AcceptOn&dfa.AcceptOnOther != 0 {
+			ctx.OtherLatchIDs = append(ctx.OtherLatchIDs, s.ID)
 		}
 	}
 
-	// Edge case: single accepting start state with no transitions (matches only empty string)
+	// Decide byte- vs rune-based matching from the states this mode actually
+	// renders: pruned start-context subgraphs must not force the rune loop
+	// (a graph with no transitions at all must take the byte loop, whose body
+	// stays fully reachable).
+	ascii := true
+	for _, s := range ctx.States {
+		for _, tr := range s.Transitions {
+			if tr.Hi > unicode.MaxASCII {
+				ascii = false
+				break
+			}
+		}
+		if !ascii {
+			break
+		}
+	}
+	ctx.ASCII = ascii
+
 	if len(d.States) > 0 {
-		startAccepts := d.States[d.Start].Accept
-		ctx.StartAccepts = startAccepts
-		if len(d.States) == 1 && startAccepts && len(d.States[0].Transitions) == 0 {
-			ctx.EdgeCase = true
-			ctx.EdgeCaseAlwaysTrue = (opts.Mode == MatchContains || opts.Mode == MatchPrefix)
+		// StartAccepts: the prefix/contains matcher is trivially true because
+		// every relevant start state accepts regardless of context (an empty
+		// match exists at every position).
+		switch opts.Mode {
+		case MatchPrefix:
+			ctx.StartAccepts = d.States[d.Start].AcceptOn == dfa.AcceptAlways
+		case MatchContains:
+			ctx.StartAccepts = true
+			for _, id := range d.StartFor {
+				if d.States[id].AcceptOn != dfa.AcceptAlways {
+					ctx.StartAccepts = false
+					break
+				}
+			}
+		}
+
+		// Edge case: a single reachable state with no transitions.
+		if len(ctx.States) == 1 && len(ctx.States[0].Transitions) == 0 && ctx.States[0].ID == d.Start {
+			mask := ctx.States[0].AcceptOn
+			switch {
+			case opts.Mode == MatchFull && mask&dfa.AcceptOnEOT != 0:
+				ctx.EdgeCase = true // matches exactly the empty string
+			case opts.Mode != MatchFull && mask == dfa.AcceptAlways:
+				ctx.EdgeCase = true
+				ctx.EdgeCaseAlwaysTrue = true
+			}
 		}
 	}
 
 	compressChains(&ctx)
 	computeTransitionBodies(&ctx)
+	computeLatchStmts(&ctx, ascii)
+	if opts.Mode == MatchContains {
+		ctx.ContainsSeed = containsSeed(d, ascii)
+	}
 
+	// The loop's byte variable must only be declared when some emitted case
+	// actually reads it. Transition conditions read it, and so do conditional
+	// latches; an unconditional `return true` latch swallows the whole case
+	// body (including any transitions, which become unreachable), and a state
+	// with neither (e.g. `$`: acceptance decided only at end of text) emits no
+	// case at all.
 	for _, s := range ctx.States {
+		lm := s.AcceptOn & latchLoopMask
+		unconditionalLatch := opts.Mode != MatchFull && lm == latchLoopMask
+		if len(s.Transitions) > 0 && !unconditionalLatch {
+			ctx.LoopHasCases = true
+			break
+		}
+		if opts.Mode != MatchFull && lm != 0 && lm != latchLoopMask {
+			ctx.LoopHasCases = true
+			break
+		}
+	}
+
+	// HasRanges considers only transitions that are actually emitted: a state
+	// whose case is swallowed by an unconditional `return true` latch never
+	// renders its transitions (and thus no match.InRange calls).
+	for _, s := range ctx.States {
+		if opts.Mode != MatchFull && s.AcceptOn&latchLoopMask == latchLoopMask {
+			continue
+		}
 		for _, t := range s.Transitions {
 			if t.Lo != t.Hi {
 				ctx.HasRanges = true
@@ -167,6 +258,101 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	ctx.NeedUTF8Import = !ascii && loopRendered
 
 	return ctx
+}
+
+// reachableStates returns the set of state IDs reachable from roots.
+func reachableStates(d *dfa.DFA, roots []int) map[int]bool {
+	stateByID := make(map[int]*dfa.State, len(d.States))
+	for _, s := range d.States {
+		stateByID[s.ID] = s
+	}
+	reach := make(map[int]bool)
+	stack := append([]int{}, roots...)
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if reach[id] {
+			continue
+		}
+		reach[id] = true
+		s := stateByID[id]
+		if s == nil {
+			continue
+		}
+		for _, t := range s.Transitions {
+			stack = append(stack, t.Next)
+		}
+	}
+	return reach
+}
+
+// wordCond emits a Go condition testing whether v (a byte or rune variable)
+// is an ASCII word character, matching regexp's \b semantics.
+func wordCond(v string) string {
+	return fmt.Sprintf("%s == '_' || ('0' <= %s && %s <= '9') || ('A' <= %s && %s <= 'Z') || ('a' <= %s && %s <= 'z')",
+		v, v, v, v, v, v, v)
+}
+
+// computeLatchStmts fills the acceptance latch emitted before stepping in the
+// prefix/contains loops: the match ending at the current position is accepted
+// iff the state's AcceptOn mask covers the class of the upcoming rune.
+// Assertion-free accepting states latch unconditionally.
+func computeLatchStmts(ctx *templateContext, ascii bool) {
+	v := "r"
+	if ascii {
+		v = "c"
+	}
+	for i := range ctx.States {
+		ctx.States[i].LatchStmt = latchStmt(ctx.States[i].AcceptOn, v)
+	}
+}
+
+func latchStmt(m dfa.AcceptMask, v string) string {
+	const loopMask = dfa.AcceptOnOther | dfa.AcceptOnWord | dfa.AcceptOnNL
+	switch m & loopMask {
+	case 0:
+		return "" // accepts at end of text only (or never); handled after the loop
+	case loopMask:
+		return "return true"
+	case dfa.AcceptOnWord:
+		return fmt.Sprintf("if %s { return true }", wordCond(v))
+	case dfa.AcceptOnOther | dfa.AcceptOnNL:
+		return fmt.Sprintf("if !(%s) { return true }", wordCond(v))
+	case dfa.AcceptOnNL:
+		return fmt.Sprintf("if %s == '\\n' { return true }", v)
+	case dfa.AcceptOnOther:
+		return fmt.Sprintf("if %s != '\\n' && !(%s) { return true }", v, wordCond(v))
+	case dfa.AcceptOnOther | dfa.AcceptOnWord:
+		return fmt.Sprintf("if %s != '\\n' { return true }", v)
+	case dfa.AcceptOnWord | dfa.AcceptOnNL:
+		return fmt.Sprintf("if %s == '\\n' || %s { return true }", v, wordCond(v))
+	}
+	return ""
+}
+
+// containsSeed emits the statements seeding `state` for a contains-mode start
+// position. When the pattern carries assertions, the start state depends on
+// the class of the rune immediately before the position.
+func containsSeed(d *dfa.DFA, ascii bool) string {
+	sf := d.StartFor
+	if sf[dfa.ClassOther] == sf[dfa.ClassWord] && sf[dfa.ClassOther] == sf[dfa.ClassNL] &&
+		sf[dfa.ClassOther] == sf[dfa.ClassBegin] {
+		return fmt.Sprintf("\t\tstate := %d", d.Start)
+	}
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "\t\tstate := %d\n", sf[dfa.ClassOther])
+	fmt.Fprintf(&b, "\t\tif start == 0 {\n")
+	fmt.Fprintf(&b, "\t\t\tstate = %d\n", sf[dfa.ClassBegin])
+	if ascii {
+		fmt.Fprintf(&b, "\t\t} else if p := input[start-1]; %s {\n", wordCond("p"))
+	} else {
+		fmt.Fprintf(&b, "\t\t} else if p, _ := utf8.DecodeLastRuneInString(input[:start]); %s {\n", wordCond("p"))
+	}
+	fmt.Fprintf(&b, "\t\t\tstate = %d\n", sf[dfa.ClassWord])
+	fmt.Fprintf(&b, "\t\t} else if p == '\\n' {\n")
+	fmt.Fprintf(&b, "\t\t\tstate = %d\n", sf[dfa.ClassNL])
+	fmt.Fprintf(&b, "\t\t}")
+	return b.String()
 }
 
 func transitionShape(s templateState) string {
@@ -215,6 +401,15 @@ func compressChains(ctx *templateContext) {
 			continue
 		}
 
+		if ctx.Mode != "full" && s.AcceptOn&latchLoopMask == latchLoopMask {
+			// In prefix/contains mode this state's case is an unconditional
+			// `return true` that swallows its transitions; compressing a chain
+			// through it would only declare a counter that is never read.
+			// (Chain members share the head's AcceptOn, so checking candidate
+			// heads suffices.)
+			continue
+		}
+
 		shape := transitionShape(s)
 		if shape == "" {
 			continue
@@ -244,7 +439,7 @@ func compressChains(ctx *templateContext) {
 			if cs == nil {
 				break
 			}
-			if cs.Accept != s.Accept {
+			if cs.AcceptOn != s.AcceptOn {
 				break
 			}
 			if transitionShape(*cs) != shape {
@@ -318,6 +513,14 @@ func compressChains(ctx *templateContext) {
 		}
 	}
 	ctx.AcceptIDs = newAcceptIDs
+
+	var newOtherLatchIDs []int
+	for _, id := range ctx.OtherLatchIDs {
+		if !chainMembers[id] {
+			newOtherLatchIDs = append(newOtherLatchIDs, id)
+		}
+	}
+	ctx.OtherLatchIDs = newOtherLatchIDs
 
 	ctx.NumChains = len(chains)
 }
