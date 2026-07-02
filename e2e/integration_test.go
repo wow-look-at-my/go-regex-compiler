@@ -278,6 +278,32 @@ func TestIntegrationPrefix(t *testing.T) {
 				{"", false},
 			},
 		},
+		{
+			// Regression: the match passes THROUGH an accepting state ("a"
+			// accepts) before the DFA dies trying to extend to "abc". The old
+			// codegen only tested the state the DFA died in and returned false
+			// for "ab" and "abx" despite the matching prefix "a".
+			name: "a(bc)?", matchFn: MatchPrefixOptional,
+			cases: []testCase{
+				{"a", true},
+				{"ab", true},  // prefix "a" matches (bc incomplete)
+				{"abx", true}, // prefix "a" matches (bc abandoned)
+				{"abc", true},
+				{"abcx", true},
+				{"x", false},
+				{"", false},
+			},
+		},
+		{
+			// Regression: start state accepting means the empty prefix always
+			// matches, whatever the input.
+			name: "a*", matchFn: MatchPrefixAStar,
+			cases: []testCase{
+				{"", true},
+				{"aaa", true},
+				{"zzz", true}, // empty prefix matches
+			},
+		},
 	}
 
 	for _, tt := range tests {

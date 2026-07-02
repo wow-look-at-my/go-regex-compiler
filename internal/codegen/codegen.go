@@ -44,9 +44,16 @@ type templateContext struct {
 	AcceptIDs          []int
 	EdgeCase           bool // single accepting state with no transitions
 	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts       bool // start state is accepting (for contains early-return)
+	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
 	NumChains          int
 	HasRanges          bool
+
+	// EarlyAccept is set for modes where reaching ANY accepting state proves a
+	// match (prefix: some prefix matched). Transitions into an accepting state
+	// are rendered as "return true" and accepting states are dropped from the
+	// state machine (they become unreachable).
+	EarlyAccept bool
+	acceptSet   map[int]bool // IDs of accepting states (for EarlyAccept rendering)
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -114,6 +121,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		Start:       d.Start,
 	}
 
+	ctx.acceptSet = make(map[int]bool)
 	for _, s := range d.States {
 		ts := templateState{ID: s.ID, Accept: s.Accept}
 		for _, tr := range s.Transitions {
@@ -124,6 +132,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		ctx.States = append(ctx.States, ts)
 		if s.Accept {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
+			ctx.acceptSet[s.ID] = true
 		}
 	}
 
@@ -135,6 +144,21 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 			ctx.EdgeCase = true
 			ctx.EdgeCaseAlwaysTrue = (opts.Mode == MatchContains || opts.Mode == MatchPrefix)
 		}
+	}
+
+	if opts.Mode == MatchPrefix {
+		ctx.EarlyAccept = true
+	}
+	if ctx.EarlyAccept && !ctx.StartAccepts {
+		// Accepting states are never entered (transitions into them return
+		// true), so drop them from the emitted state machine.
+		var kept []templateState
+		for _, s := range ctx.States {
+			if !s.Accept {
+				kept = append(kept, s)
+			}
+		}
+		ctx.States = kept
 	}
 
 	compressChains(&ctx)
@@ -330,12 +354,18 @@ func quoteRegex(s string) string {
 	return "`" + s + "`"
 }
 
-func stateTransition(s templateState, t templateTransition) string {
-	if s.IsChain {
-		return fmt.Sprintf("if chainCount%d >= %d { state = %d } else { chainCount%d++ }",
-			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
+func stateTransition(ctx templateContext, s templateState, t templateTransition) string {
+	enter := func(id int) string {
+		if ctx.EarlyAccept && ctx.acceptSet[id] {
+			return "return true"
+		}
+		return fmt.Sprintf("state = %d", id)
 	}
-	return fmt.Sprintf("state = %d", t.Next)
+	if s.IsChain {
+		return fmt.Sprintf("if chainCount%d >= %d { %s } else { chainCount%d++ }",
+			s.ChainIndex, s.ChainMaxCount, enter(s.ChainTerminal), s.ChainIndex)
+	}
+	return enter(t.Next)
 }
 
 type groupedCase struct {
@@ -343,8 +373,8 @@ type groupedCase struct {
 	Body string
 }
 
-func groupByteTransitions(s templateState) []groupedCase {
-	return groupTransitions(s, func(t templateTransition) string {
+func groupByteTransitions(ctx templateContext, s templateState) []groupedCase {
+	return groupTransitions(ctx, s, func(t templateTransition) string {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("c == %s", quoteByte(t.Lo))
 		}
@@ -352,8 +382,8 @@ func groupByteTransitions(s templateState) []groupedCase {
 	})
 }
 
-func groupRuneTransitions(s templateState) []groupedCase {
-	return groupTransitions(s, func(t templateTransition) string {
+func groupRuneTransitions(ctx templateContext, s templateState) []groupedCase {
+	return groupTransitions(ctx, s, func(t templateTransition) string {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("r == %s", quoteRune(t.Lo))
 		}
@@ -361,14 +391,14 @@ func groupRuneTransitions(s templateState) []groupedCase {
 	})
 }
 
-func groupTransitions(s templateState, condFn func(templateTransition) string) []groupedCase {
+func groupTransitions(ctx templateContext, s templateState, condFn func(templateTransition) string) []groupedCase {
 	var groups []groupedCase
 	i := 0
 	for i < len(s.Transitions) {
-		body := stateTransition(s, s.Transitions[i])
+		body := stateTransition(ctx, s, s.Transitions[i])
 		conds := condFn(s.Transitions[i])
 		j := i + 1
-		for j < len(s.Transitions) && stateTransition(s, s.Transitions[j]) == body {
+		for j < len(s.Transitions) && stateTransition(ctx, s, s.Transitions[j]) == body {
 			conds += ", " + condFn(s.Transitions[j])
 			j++
 		}

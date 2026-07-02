@@ -183,7 +183,21 @@ func TestGeneratePrefixModeUnicode(t *testing.T) {
 	output := generateWithMode(t, `[\x{00C0}-\x{00FF}]+`, "MatchPrefix", MatchPrefix)
 	assertValidGo(t, output)
 	assert.Contains(t, output, "utf8.DecodeRuneInString")
-	assert.Contains(t, output, "goto done")
+	// Prefix mode returns true as soon as an accepting state is entered.
+	assert.Contains(t, output, "return true")
+}
+
+// TestGeneratePrefixPassThroughAccept is a regression test: a prefix match
+// that passes THROUGH an accepting state (here after "a", while the DFA could
+// still consume "bc") must be reported even when a longer attempt dies later.
+// The old codegen only tested the state the DFA died in, so `a(bc)?` against
+// "abx" (and "ab") returned false despite the matching prefix "a".
+func TestGeneratePrefixPassThroughAccept(t *testing.T) {
+	output := generateWithMode(t, `a(bc)?`, "MatchPrefix", MatchPrefix)
+	assertValidGo(t, output)
+	// Entering the accept state after 'a' must immediately return true; the
+	// generated matcher must not wait for the DFA to die first.
+	assert.Contains(t, output, "case c == 'a': return true")
 }
 
 func TestGenerateContainsModeUnicode(t *testing.T) {

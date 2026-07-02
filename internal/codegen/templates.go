@@ -18,11 +18,11 @@ var funcMap = template.FuncMap{
 	"stateTransition":      stateTransition,
 	"groupByteTransitions": groupByteTransitions,
 	"groupRuneTransitions": groupRuneTransitions,
-	"groupTransitions": func(kind string, s templateState) []groupedCase {
+	"groupTransitions": func(ctx templateContext, kind string, s templateState) []groupedCase {
 		if kind == "byte" {
-			return groupByteTransitions(s)
+			return groupByteTransitions(ctx, s)
 		}
-		return groupRuneTransitions(s)
+		return groupRuneTransitions(ctx, s)
 	},
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
@@ -42,8 +42,6 @@ const allTemplates = headerTemplate +
 	containsBodyTemplate +
 	asciiLoopTemplate +
 	utf8LoopTemplate +
-	asciiLoopPrefixTemplate +
-	utf8LoopPrefixTemplate +
 	asciiContainsTemplate +
 	utf8ContainsTemplate +
 	statesTemplate +
@@ -127,19 +125,31 @@ const fullBodyTemplate = `
 `
 
 // ---------- prefix body ----------
+//
+// Prefix mode returns true the moment ANY accepting state is entered: a match
+// found mid-input proves some prefix matches, even if the DFA later dies. (The
+// old shape — run until dead and test the final state — missed matches that
+// passed THROUGH an accepting state, e.g. `a(bc)?` against "abx".) Accepting
+// states are unreachable under this scheme, so the loop only ever holds
+// non-accepting states, and running out of input or transitions means no
+// prefix matched.
 
 const prefixBodyTemplate = `
 {{- define "prefixBody" }}
+{{- if .StartAccepts }}
+	return true
+{{- else }}
 	state := {{ .Start }}
 {{- range chainIndices .NumChains }}
 	chainCount{{ . }} := 0
 {{- end }}
 {{- if .ASCII -}}
-{{ template "asciiLoopPrefix" . }}
+{{ template "asciiLoop" . }}
 {{- else -}}
-{{ template "utf8LoopPrefix" . }}
+{{ template "utf8Loop" . }}
 {{- end }}
-{{ template "acceptCheck" . }}
+	return false
+{{- end }}
 {{- end -}}
 `
 
@@ -184,38 +194,6 @@ const utf8LoopTemplate = `
 		}
 		i += size
 	}
-{{- end -}}
-`
-
-const asciiLoopPrefixTemplate = `
-{{- define "asciiLoopPrefix" }}
-	for i := 0; i < len(input); i++ {
-		c := input[i]
-		switch state {
-{{ template "statesASCIIPrefix" . }}
-		default:
-			goto done
-		}
-	}
-done:
-{{- end -}}
-`
-
-const utf8LoopPrefixTemplate = `
-{{- define "utf8LoopPrefix" }}
-	for i := 0; i < len(input); {
-		r, size := utf8.DecodeRuneInString(input[i:])
-		if r == utf8.RuneError && size == 1 {
-			goto done
-		}
-		switch state {
-{{ template "statesRunePrefix" . }}
-		default:
-			goto done
-		}
-		i += size
-	}
-done:
 {{- end -}}
 `
 
@@ -312,9 +290,7 @@ const utf8ContainsTemplate = `
 
 const statesTemplate = `
 {{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
-{{- define "statesASCIIPrefix" }}{{ template "statesInner" (args . "byte" "goto done") }}{{ end }}
 {{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
-{{- define "statesRunePrefix" }}{{ template "statesInner" (args . "rune" "goto done") }}{{ end }}
 {{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
@@ -322,7 +298,7 @@ const statesTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 		case {{ .ID }}:
 			switch {
-{{- range groupTransitions $condKind . }}
+{{- range groupTransitions $ctx $condKind . }}
 			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ $noMatch }}
@@ -340,7 +316,7 @@ const statesContainsTemplate = `
 {{- range $ctx.States }}{{ if isLive . }}
 			case {{ .ID }}:
 				switch {
-{{- range groupTransitions $condKind . }}
+{{- range groupTransitions $ctx $condKind . }}
 				case {{ .Cond }}: {{ .Body }}
 {{- end }}
 				default: dead = true

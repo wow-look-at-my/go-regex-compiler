@@ -95,6 +95,10 @@ var fixtures = []fixture{
 	{"gen_prefix_charclass.go", "[a-z]+", "MatchPrefixCharClass", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_digitdash.go", `\d{3}-\d{2}`, "MatchPrefixDigitDash", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_aplusb.go", "a+b", "MatchPrefixAPlusB", codegen.MatchPrefix, false, ""},
+	// Regression: a prefix match that passes THROUGH an accepting state
+	// ("a" accepts, then the DFA keeps going for the optional "bc").
+	{"gen_prefix_optional.go", "a(bc)?", "MatchPrefixOptional", codegen.MatchPrefix, false, ""},
+	{"gen_prefix_astar.go", "a*", "MatchPrefixAStar", codegen.MatchPrefix, false, ""},
 
 	// Contains mode
 	{"gen_contains_charclass.go", "[a-z]+", "MatchContainsCharClass", codegen.MatchContains, false, ""},
