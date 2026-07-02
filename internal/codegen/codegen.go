@@ -326,7 +326,17 @@ func quoteByte(r rune) string {
 	return strconv.QuoteRune(rune(byte(r)))
 }
 
+// quoteRegex renders the source pattern for use inside a // line comment.
+// The readable backtick form is used when safe; a pattern containing control
+// characters (a literal newline would terminate the comment and split the
+// generated file, and NUL is illegal in Go source) falls back to a
+// double-quoted, escaped, single-line Go string literal.
 func quoteRegex(s string) string {
+	for _, r := range s {
+		if r < ' ' || r == 0x7f {
+			return strconv.Quote(s)
+		}
+	}
 	return "`" + s + "`"
 }
 

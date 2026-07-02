@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"regexp/syntax"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -74,6 +75,36 @@ func TestGenerateHeader(t *testing.T) {
 	assert.Contains(t, output, "package mypkg")
 	assert.Contains(t, output, "func MatchABC(input string) bool")
 	assert.Contains(t, output, "Source regex: `abc`")
+}
+
+func TestGenerateControlCharPattern(t *testing.T) {
+	// A pattern containing a literal newline (or any control character) must
+	// not split the header line comments and break the generated file.
+	patterns := []string{"(?m)a$\nb", "a\tb", "a\rb"}
+	for _, pattern := range patterns {
+		t.Run(strconv.Quote(pattern), func(t *testing.T) {
+			for _, mode := range []MatchMode{MatchFull, MatchPrefix, MatchContains} {
+				d := buildDFA(t, pattern)
+				var buf bytes.Buffer
+				require.NoError(t, Generate(&buf, d, Options{
+					PackageName: "testpkg",
+					FuncName:    "Match",
+					Regex:       pattern,
+					Mode:        mode,
+				}))
+				output := buf.String()
+				assertValidGo(t, output)
+				assert.Contains(t, output, strconv.Quote(pattern),
+					"control-char pattern should be emitted as an escaped Go string literal")
+			}
+		})
+	}
+}
+
+func TestQuoteRegex(t *testing.T) {
+	assert.Equal(t, "`a\\d+`", quoteRegex(`a\d+`))
+	assert.Equal(t, `"a\nb"`, quoteRegex("a\nb"))
+	assert.Equal(t, `"a\x00b"`, quoteRegex("a\x00b"))
 }
 
 func TestGenerateASCIIOptimization(t *testing.T) {
