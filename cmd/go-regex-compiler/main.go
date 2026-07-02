@@ -77,10 +77,17 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --match mode %q: must be full, prefix, or contains", matchMode)
 	}
 
+	if submatch && mode != codegen.MatchFull {
+		return fmt.Errorf("--submatch requires --match full: the generated submatch functions extract captures from a full-string match only, so combining them with --match %s would silently return nil for every partial match", matchMode)
+	}
+
 	// Stage 1: Parse regex into NFA (with capture group info)
 	result, err := parser.ParseResult(regex)
 	if err != nil {
 		return err
+	}
+	if submatch && result.NumGroups == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch ignored: the regex has no capture groups")
 	}
 
 	// Stage 2: Build DFA from NFA
@@ -100,7 +107,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	if submatch && result.NumGroups > 0 {
 		structEnabled := submatchStruct
 		if submatchStruct && !codegen.HasNamedGroups(result.GroupNames) {
-			fmt.Fprintln(os.Stderr, "note: --submatch-struct ignored: the regex has no named capture groups")
+			fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch-struct ignored: the regex has no named capture groups")
 			structEnabled = false
 		}
 		opts.Submatch = &codegen.SubmatchOptions{

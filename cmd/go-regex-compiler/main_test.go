@@ -12,6 +12,12 @@ import (
 
 func execute(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	stdout, _, err := executeCapture(t, args...)
+	return stdout, err
+}
+
+func executeCapture(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
 	regex = ""
 	pkg = ""
 	funcName = "Match"
@@ -21,11 +27,12 @@ func execute(t *testing.T, args ...string) (string, error) {
 	submatchFn = "FindSubmatch"
 
 	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
 	rootCmd.SetOut(stdout)
-	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetErr(stderr)
 	rootCmd.SetArgs(args)
 	err := rootCmd.Execute()
-	return stdout.String(), err
+	return stdout.String(), stderr.String(), err
 }
 
 func TestRunToStdout(t *testing.T) {
@@ -107,6 +114,30 @@ func TestRunWithSubmatch(t *testing.T) {
 	assert.Contains(t, stdout, "package mypkg")
 	assert.Contains(t, stdout, "func MatchEmail(input string) bool")
 	assert.Contains(t, stdout, "func FindEmailSubmatch(input string) []string")
+}
+
+func TestRunSubmatchRequiresFullMode(t *testing.T) {
+	for _, mode := range []string{"prefix", "contains"} {
+		t.Run(mode, func(t *testing.T) {
+			_, err := execute(t, "--regex", "(a)b", "--submatch", "--match", mode)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--submatch requires --match full")
+		})
+	}
+}
+
+func TestRunSubmatchNoGroupsNote(t *testing.T) {
+	stdout, stderr, err := executeCapture(t, "--regex", "abc", "--submatch")
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "note: --submatch ignored: the regex has no capture groups")
+	assert.Contains(t, stdout, "func Match(input string) bool")
+	assert.NotContains(t, stdout, "FindSubmatch", "no submatch family should be generated without capture groups")
+}
+
+func TestRunSubmatchWithGroupsNoNote(t *testing.T) {
+	_, stderr, err := executeCapture(t, "--regex", "(a)b", "--submatch")
+	require.NoError(t, err)
+	assert.NotContains(t, stderr, "note:")
 }
 
 func TestRunInvalidMatchMode(t *testing.T) {
