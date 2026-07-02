@@ -312,20 +312,34 @@ func deserializeStateSet(key string) []int {
 	return result
 }
 
-// expandFoldCase expands rune range pairs to include all case-folded equivalents.
+// Unicode simple case folding only exists inside [minFold, maxFold] (the same
+// band regexp/syntax uses); runes outside it fold only to themselves.
+const (
+	minFold = 0x0041
+	maxFold = 0x1e943
+)
+
+// expandFoldCase expands rune range pairs to include all case-folded
+// equivalents. The scan is clamped to the foldable band, which bounds the
+// work without dropping any fold (a previous version silently capped
+// expansion at 256 runes per range, losing folds at offsets >= 256).
 func expandFoldCase(runes []rune) []rune {
 	var expanded []rune
 	expanded = append(expanded, runes...)
 
 	for i := 0; i < len(runes); i += 2 {
 		lo, hi := runes[i], runes[i+1]
-		for r := lo; r <= hi && r-lo < 256; r++ { // cap expansion to avoid huge ranges
+		if lo < minFold {
+			lo = minFold
+		}
+		if hi > maxFold {
+			hi = maxFold
+		}
+		for r := lo; r <= hi; r++ {
 			for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 				expanded = append(expanded, f, f)
 			}
 		}
-		// For large ranges, rely on the original range being sufficient
-		// (most Unicode case folding is within small alphabetic ranges)
 	}
 
 	return mergeRuneRanges(expanded)

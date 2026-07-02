@@ -134,6 +134,27 @@ func TestEpsilonClosure(t *testing.T) {
 	assert.Contains(t, closure, prog.Start, "epsilon closure should contain start state")
 }
 
+func TestExpandFoldCaseNoCap(t *testing.T) {
+	// U+212A (KELVIN SIGN) sits at offset 0x12A (> 256) from U+2000; its fold
+	// orbit {k, K} must not be dropped by any per-range expansion cap.
+	got := expandFoldCase([]rune{0x2000, 0x2200})
+	assert.True(t, rangesContain(got, 'k'), "fold expansion must include 'k' (fold of U+212A)")
+	assert.True(t, rangesContain(got, 'K'), "fold expansion must include 'K' (fold of U+212A)")
+	assert.True(t, rangesContain(got, 0x2100), "original range must be preserved")
+
+	// A range entirely outside the foldable band expands to itself.
+	assert.Equal(t, []rune{0x30000, 0x30010}, expandFoldCase([]rune{0x30000, 0x30010}))
+}
+
+func rangesContain(pairs []rune, r rune) bool {
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if r >= pairs[i] && r <= pairs[i+1] {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMergeRuneRanges(t *testing.T) {
 	tests := []struct {
 		name   string
