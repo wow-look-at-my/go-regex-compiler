@@ -88,7 +88,11 @@ The generated `ExtractDate` function returns `[]string` where index 0 is the ful
 ### Capture groups
 
 When `--submatch` is set, the generator emits a small family of functions that
-mirror the `regexp` API and share a single Thompson NFA core:
+mirror the `regexp` API and share a single Thompson NFA core. `--submatch`
+requires `--match full`: the submatch functions extract groups from a
+full-string match, so combining them with prefix/contains matching would be
+self-contradictory (the bool matcher could say true while the extractor
+returns `nil`).
 
 - **`<func>(input string) []string`** (default `FindSubmatch`) — positional
   extraction. Index 0 is the whole match, indices 1..N are the groups. A group

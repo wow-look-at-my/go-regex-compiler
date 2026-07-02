@@ -77,6 +77,14 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --match mode %q: must be full, prefix, or contains", matchMode)
 	}
 
+	if submatch && mode != codegen.MatchFull {
+		// The generated submatch family extracts from a FULL-string match
+		// (parity with regexp on an anchored pattern). Combining it with
+		// prefix/contains produced a self-contradictory pair: Match(input)
+		// could be true while FindSubmatch(input) returned nil.
+		return fmt.Errorf("--submatch requires --match full: the submatch functions extract capture groups from a full-string match, which %s mode does not produce", matchMode)
+	}
+
 	// Stage 1: Parse regex into NFA (with capture group info)
 	result, err := parser.ParseResult(regex)
 	if err != nil {

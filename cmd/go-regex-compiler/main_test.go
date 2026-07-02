@@ -80,6 +80,19 @@ func TestRunUnsupportedAssertions(t *testing.T) {
 	}
 }
 
+// TestRunSubmatchRequiresFullMode: --submatch with prefix/contains used to
+// generate a self-contradictory pair (Match(input) true while
+// FindSubmatch(input) returned nil, since extraction is full-anchored).
+func TestRunSubmatchRequiresFullMode(t *testing.T) {
+	for _, m := range []string{"prefix", "contains"} {
+		t.Run(m, func(t *testing.T) {
+			_, err := execute(t, "--regex", "(a+)b", "--match", m, "--submatch")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--submatch requires --match full")
+		})
+	}
+}
+
 // TestRunSupportedAssertions: anchors and word boundaries that are always
 // satisfied at their position keep compiling.
 func TestRunSupportedAssertions(t *testing.T) {
