@@ -38,6 +38,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "parse %q: %v\n", f.regex, err)
 			os.Exit(1)
 		}
+		anchorStart, anchorEnd := true, true
+		if f.mode == codegen.MatchContains {
+			anchorStart, anchorEnd = false, false
+		}
+		if err := dfa.ValidateAssertions(prog, anchorStart, anchorEnd); err != nil {
+			fmt.Fprintf(os.Stderr, "assertions %q: %v\n", f.regex, err)
+			os.Exit(1)
+		}
 		build := dfa.Build
 		if f.mode == codegen.MatchContains {
 			build = dfa.BuildSearch

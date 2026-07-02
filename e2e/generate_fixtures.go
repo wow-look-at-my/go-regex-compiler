@@ -141,6 +141,9 @@ func generateNamed(f namedFixture) error {
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
 	}
+	if err := dfa.ValidateAssertions(result.Prog, true, true); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
+	}
 	d, err := dfa.Build(result.Prog)
 	if err != nil {
 		return fmt.Errorf("dfa %q: %w", f.regex, err)
@@ -186,6 +189,16 @@ func generateMatch(f fixture) error {
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
 	}
+	anchorStart, anchorEnd := true, true
+	switch f.mode {
+	case codegen.MatchPrefix:
+		anchorEnd = false
+	case codegen.MatchContains:
+		anchorStart, anchorEnd = false, false
+	}
+	if err := dfa.ValidateAssertions(prog, anchorStart, anchorEnd); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
+	}
 	build := dfa.Build
 	if f.mode == codegen.MatchContains {
 		build = dfa.BuildSearch
@@ -211,6 +224,9 @@ func generateSubmatch(f fixture) error {
 	result, err := parser.ParseResult(f.regex)
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
+	}
+	if err := dfa.ValidateAssertions(result.Prog, true, true); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
 	}
 	d, err := dfa.Build(result.Prog)
 	if err != nil {

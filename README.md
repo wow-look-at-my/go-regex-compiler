@@ -36,6 +36,30 @@ go-regex-compiler --regex 'pattern' [flags]
 - **prefix** -- matches if the string starts with the pattern
 - **contains** -- matches if any substring matches the pattern
 
+### Empty-width assertions
+
+A DFA cannot inspect the characters around a boundary, so `^`, `$`, `\A`,
+`\z`, `\b`, and `\B` are only accepted where they are provably **always
+satisfied** for the chosen `--match` mode; anything else is rejected with an
+error explaining the construct (older versions silently ignored assertions
+and generated wrong matchers, e.g. `foo\bbar` full-matched `"foobar"`):
+
+- `^` / `\A` (and `(?m)^`) -- allowed at the start of the pattern in `full`
+  and `prefix` modes, which are start-anchored anyway. Rejected mid-pattern
+  and in `contains` mode.
+- `$` / `\z` (and `(?m)$`) -- allowed at the end of the pattern in `full`
+  mode. Rejected mid-pattern and in `prefix`/`contains` modes (a match may
+  end before the input does).
+- `\b` / `\B` -- allowed only where every possible neighboring-character
+  combination satisfies the assertion, e.g. `\bfoo...` or `...foo\b` in
+  `full` mode (text edge on one side, word characters on the other).
+  Rejected otherwise (`foo\bbar`, or `\berror` in `contains` mode, where the
+  character before the match is unknown).
+
+The `--submatch` functions evaluate all assertions exactly (their Thompson
+simulation checks them per position), but they share the pattern with the
+DFA matcher that gates them, so the same validation applies.
+
 ## Examples
 
 Generate a function that matches email-like patterns:

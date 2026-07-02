@@ -83,6 +83,19 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Reject empty-width assertions the DFA cannot honor in this match mode
+	// (previously they were silently ignored, producing wrong matchers).
+	anchorStart, anchorEnd := true, true
+	switch mode {
+	case codegen.MatchPrefix:
+		anchorEnd = false
+	case codegen.MatchContains:
+		anchorStart, anchorEnd = false, false
+	}
+	if err := dfa.ValidateAssertions(result.Prog, anchorStart, anchorEnd); err != nil {
+		return err
+	}
+
 	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search
 	// DFA so the generated matcher scans the input in a single pass.
 	build := dfa.Build
