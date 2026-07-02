@@ -66,10 +66,10 @@ const headerTemplate = `
 
 package {{ .PackageName }}
 
-{{ if .HasRanges }}
+{{ if .NeedMatchImport }}
 import "github.com/wow-look-at-my/go-regex-compiler/match"
 {{ end }}
-{{ if not .ASCII }}
+{{ if .NeedUTF8Import }}
 import "unicode/utf8"
 {{ end }}
 {{ end -}}

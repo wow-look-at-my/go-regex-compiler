@@ -210,6 +210,19 @@ func TestGenerateContainsMode(t *testing.T) {
 	}
 }
 
+func TestGenerateContainsStartAcceptsCompiles(t *testing.T) {
+	// A contains-mode matcher whose DFA start state accepts short-circuits to
+	// `return true`; the header must not emit the match/utf8 imports the body
+	// never uses (they made 19/228 fuzzed contains patterns fail to compile).
+	for _, p := range []string{`\D?`, `x*`, `a?`, `\W*`, `(a|b)*`} {
+		t.Run(p, func(t *testing.T) {
+			out := generateWithMode(t, p, "MatchContains", MatchContains)
+			assertValidGo(t, out)
+			assertNoUnusedImports(t, out)
+		})
+	}
+}
+
 func TestGeneratePrefixModeUnicode(t *testing.T) {
 	output := generateWithMode(t, `[\x{00C0}-\x{00FF}]+`, "MatchPrefix", MatchPrefix)
 	assertValidGo(t, output)
