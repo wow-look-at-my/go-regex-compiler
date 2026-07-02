@@ -77,6 +77,7 @@ var fixtures = []fixture{
 	{"gen_full_dotplus.go", ".+", "MatchDotPlus", codegen.MatchFull, false, ""},
 	{"gen_full_empty.go", "", "MatchEmpty", codegen.MatchFull, false, ""},
 	{"gen_full_nested_quant.go", "(ab?c)+", "MatchNestedQuant", codegen.MatchFull, false, ""},
+	{"gen_full_chainreentry.go", `a{3}(?:ba{3})*`, "MatchChainReentry", codegen.MatchFull, false, ""},
 	{"gen_full_email.go", `[a-z]+@[a-z]+\.[a-z]{2,}`, "MatchEmail", codegen.MatchFull, false, ""},
 	{"gen_full_hexcolor.go", `#[0-9a-f]{6}`, "MatchHexColor", codegen.MatchFull, false, ""},
 

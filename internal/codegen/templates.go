@@ -15,7 +15,6 @@ var funcMap = template.FuncMap{
 	"goString":             goString,
 	"isLive":               func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":                 func(args ...any) []any { return args },
-	"stateTransition":      stateTransition,
 	"groupByteTransitions": groupByteTransitions,
 	"groupRuneTransitions": groupRuneTransitions,
 	"groupTransitions": func(kind string, s templateState) []groupedCase {

@@ -208,6 +208,23 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
+			// Regression: chain-compression counters must reset when a DFA
+			// loop re-enters a compressed chain head (a{3} is compressed, and
+			// (?:ba{3})* re-enters it).
+			name: `a{3}(?:ba{3})*`, matchFn: MatchChainReentry,
+			cases: []testCase{
+				{"aaa", true},
+				{"aaabaaa", true},
+				{"aaabaaabaaa", true}, // stale counter made this a false negative
+				{"aaabaaaba", false},  // stale counter made this a false positive
+				{"aaabaaab", false},
+				{"aaab", false},
+				{"aa", false},
+				{"aaaa", false},
+				{"", false},
+			},
+		},
+		{
 			name: `[a-z0-9][a-z0-9._-]{0,127}`, matchFn: MatchContainer,
 			cases: []testCase{
 				{"a", true},

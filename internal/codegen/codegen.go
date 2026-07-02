@@ -65,6 +65,7 @@ type templateTransition struct {
 	Lo   rune
 	Hi   rune
 	Next int
+	Body string // Go statement emitted when the transition is taken
 }
 
 // Generate writes Go source code implementing a DFA matcher to w.
@@ -138,6 +139,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	compressChains(&ctx)
+	computeTransitionBodies(&ctx)
 
 	for _, s := range ctx.States {
 		for _, t := range s.Transitions {
@@ -340,12 +342,40 @@ func quoteRegex(s string) string {
 	return "`" + s + "`"
 }
 
-func stateTransition(s templateState, t templateTransition) string {
-	if s.IsChain {
-		return fmt.Sprintf("if chainCount%d >= %d { state = %d } else { chainCount%d++ }",
-			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
+// computeTransitionBodies fills in the Go statement emitted for every
+// transition, including chain-counter bookkeeping. Chain counters are
+// function-scoped and a DFA loop may re-enter a compressed chain's head state
+// (e.g. `a{3}(?:ba{3})*`), so every transition INTO a chain head from outside
+// the chain must reset that chain's counter; otherwise the matcher resumes
+// with a stale count and jumps to the chain terminal too early.
+func computeTransitionBodies(ctx *templateContext) {
+	headChain := make(map[int]int) // chain head state ID -> chain index
+	for i := range ctx.States {
+		if ctx.States[i].IsChain {
+			headChain[ctx.States[i].ID] = ctx.States[i].ChainIndex
+		}
 	}
-	return fmt.Sprintf("state = %d", t.Next)
+	reset := func(target int) string {
+		if idx, ok := headChain[target]; ok {
+			return fmt.Sprintf("; chainCount%d = 0", idx)
+		}
+		return ""
+	}
+	for i := range ctx.States {
+		s := &ctx.States[i]
+		for j := range s.Transitions {
+			t := &s.Transitions[j]
+			if s.IsChain {
+				// While counting, control stays in the head state; the jump to
+				// the terminal is the only transition out of the chain (and the
+				// terminal itself may be another chain's head).
+				t.Body = fmt.Sprintf("if chainCount%d >= %d { state = %d%s } else { chainCount%d++ }",
+					s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, reset(s.ChainTerminal), s.ChainIndex)
+				continue
+			}
+			t.Body = fmt.Sprintf("state = %d%s", t.Next, reset(t.Next))
+		}
+	}
 }
 
 type groupedCase struct {
@@ -375,10 +405,10 @@ func groupTransitions(s templateState, condFn func(templateTransition) string) [
 	var groups []groupedCase
 	i := 0
 	for i < len(s.Transitions) {
-		body := stateTransition(s, s.Transitions[i])
+		body := s.Transitions[i].Body
 		conds := condFn(s.Transitions[i])
 		j := i + 1
-		for j < len(s.Transitions) && stateTransition(s, s.Transitions[j]) == body {
+		for j < len(s.Transitions) && s.Transitions[j].Body == body {
 			conds += ", " + condFn(s.Transitions[j])
 			j++
 		}

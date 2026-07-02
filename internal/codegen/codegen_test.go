@@ -477,6 +477,17 @@ func TestGenerateChainCompression(t *testing.T) {
 	assert.Less(t, lines, 200, "generated code should be compact with chain compression, got %d lines", lines)
 }
 
+func TestGenerateChainReentryReset(t *testing.T) {
+	// A DFA loop that re-enters a compressed chain head must reset the chain
+	// counter on entry: chain counters are function-scoped, so a stale count
+	// made a{3}(?:ba{3})* jump to the chain terminal too early on re-entry.
+	output := generateCode(t, `a{3}(?:ba{3})*`, "testpkg", "Match")
+	assertValidGo(t, output)
+	require.Contains(t, output, "chainCount1", "expected the (?:ba{3})* run to be chain-compressed")
+	assert.Regexp(t, `state = \d+; chainCount1 = 0`, output,
+		"transition into a re-enterable chain head must reset its counter")
+}
+
 func TestGenerateEmptyStates(t *testing.T) {
 	// DFA with no states at all
 	d := &dfa.DFA{States: nil, Start: 0}
