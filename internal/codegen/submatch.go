@@ -40,6 +40,12 @@ type submatchContext struct {
 	StartPC       int
 	Instructions  []nfaInstruction
 
+	// Priv is an unexported, per-matcher identifier prefix (the index func name
+	// with a lower-cased first rune). It uniquely names the package-level NFA
+	// program, instruction/thread/frame types, and scratch pool that the hot
+	// path reuses, so multiple generated matchers in one package never collide.
+	Priv string
+
 	// Names accessor.
 	NamesFuncName string
 	GroupNames    []string // raw names, index = group number
@@ -59,7 +65,8 @@ type structField struct {
 
 type nfaInstruction struct {
 	Index  int
-	OpName string
+	OpName string // symbolic name (comment only): "opRune", "opAlt", ...
+	OpCode int    // numeric op stored in the package-level program table
 	Out    uint32
 	// Arg holds the instruction's argument. For opCapture it is the capture
 	// slot; for opEmpty it is the syntax.EmptyOp assertion bitmask (the
@@ -81,14 +88,16 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		opts.StructFunc = "FindCaptures"
 	}
 
+	indexFuncName := opts.FuncName + "Index"
 	ctx := submatchContext{
 		FuncName:      opts.FuncName,
-		IndexFuncName: opts.FuncName + "Index",
+		IndexFuncName: indexFuncName,
 		MatchFunc:     opts.MatchFunc,
 		Regex:         opts.Regex,
 		NumSlots:      numSlots,
 		NumGroups:     numSlots / 2,
 		StartPC:       opts.Prog.Start,
+		Priv:          lowerFirst(indexFuncName),
 		NamesFuncName: opts.NamesFuncName,
 		GroupNames:    normalizeGroupNames(opts.GroupNames, opts.NumGroups),
 	}
@@ -97,6 +106,7 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		ni := nfaInstruction{
 			Index:  i,
 			OpName: instOpName(inst.Op),
+			OpCode: instOpCode(inst.Op),
 			Out:    inst.Out,
 			Arg:    int(inst.Arg),
 		}
@@ -206,6 +216,47 @@ func instOpName(op syntax.InstOp) string {
 	default:
 		return fmt.Sprintf("%d", op)
 	}
+}
+
+// instOpCode returns the numeric op code stored in the generated package-level
+// program table. The values MUST match the op* constants emitted inside the
+// index function (opRune=0 .. opEmpty=9). Unknown ops keep their raw value so
+// they fall through to the "consuming thread" default, matching instOpName.
+func instOpCode(op syntax.InstOp) int {
+	switch op {
+	case syntax.InstRune:
+		return 0
+	case syntax.InstRune1:
+		return 1
+	case syntax.InstRuneAny:
+		return 2
+	case syntax.InstRuneAnyNotNL:
+		return 3
+	case syntax.InstAlt, syntax.InstAltMatch:
+		return 4
+	case syntax.InstCapture:
+		return 5
+	case syntax.InstMatch:
+		return 6
+	case syntax.InstNop:
+		return 7
+	case syntax.InstFail:
+		return 8
+	case syntax.InstEmptyWidth:
+		return 9
+	default:
+		return int(op)
+	}
+}
+
+// lowerFirst returns s with its first rune lower-cased, yielding an unexported
+// identifier prefix for package-level generated declarations.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToLower(r)) + s[size:]
 }
 
 func formatRunes(runes []rune) string {

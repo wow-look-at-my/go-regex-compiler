@@ -47,6 +47,7 @@ type templateContext struct {
 	StartAccepts       bool // start state is accepting (for contains early-return)
 	NumChains          int
 	HasRanges          bool
+	HasSubmatch        bool // a submatch family is generated (needs the sync import)
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -70,6 +71,7 @@ type templateTransition struct {
 // Generate writes Go source code implementing a DFA matcher to w.
 func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	ctx := buildContext(d, opts)
+	ctx.HasSubmatch = opts.Submatch != nil
 
 	var buf bytes.Buffer
 

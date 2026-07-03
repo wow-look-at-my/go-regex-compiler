@@ -236,9 +236,15 @@ func TestGenerateSubmatch(t *testing.T) {
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
 			assert.Contains(t, output, "opRune")
-			assert.Contains(t, output, "nfaInst")
 			assert.Contains(t, output, "addThread")
 			assert.Contains(t, output, "runeMatch")
+			// The NFA program + instruction type are hoisted to package scope,
+			// uniquely named per matcher, and built once (no per-call rebuild).
+			assert.Contains(t, output, "type findSubmatchIndexInst struct")
+			assert.Contains(t, output, "var findSubmatchIndexProg = []findSubmatchIndexInst{")
+			assert.Contains(t, output, "sync.Pool")
+			// The per-position map is gone: no map allocation in the hot path.
+			assert.NotContains(t, output, "make(map[int]bool)")
 		})
 	}
 }
@@ -376,25 +382,36 @@ func countGroups(re *syntax.Regexp) int {
 
 func TestInstOpName(t *testing.T) {
 	tests := []struct {
-		op   syntax.InstOp
-		want string
+		op       syntax.InstOp
+		want     string
+		wantCode int
 	}{
-		{syntax.InstRune, "opRune"},
-		{syntax.InstRune1, "opRune1"},
-		{syntax.InstRuneAny, "opRuneAny"},
-		{syntax.InstRuneAnyNotNL, "opRuneAnyNL"},
-		{syntax.InstAlt, "opAlt"},
-		{syntax.InstAltMatch, "opAlt"},
-		{syntax.InstCapture, "opCapture"},
-		{syntax.InstMatch, "opMatch"},
-		{syntax.InstNop, "opNop"},
-		{syntax.InstFail, "opFail"},
-		{syntax.InstEmptyWidth, "opEmpty"},
-		{syntax.InstOp(255), "255"},
+		{syntax.InstRune, "opRune", 0},
+		{syntax.InstRune1, "opRune1", 1},
+		{syntax.InstRuneAny, "opRuneAny", 2},
+		{syntax.InstRuneAnyNotNL, "opRuneAnyNL", 3},
+		{syntax.InstAlt, "opAlt", 4},
+		{syntax.InstAltMatch, "opAlt", 4},
+		{syntax.InstCapture, "opCapture", 5},
+		{syntax.InstMatch, "opMatch", 6},
+		{syntax.InstNop, "opNop", 7},
+		{syntax.InstFail, "opFail", 8},
+		{syntax.InstEmptyWidth, "opEmpty", 9},
+		{syntax.InstOp(255), "255", 255},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, instOpName(tt.op))
+		// instOpCode must agree with the numeric op baked into the program table
+		// and, for known ops, index the symbolic name emitted in the sim.
+		assert.Equal(t, tt.wantCode, instOpCode(tt.op), "op code for %s", tt.want)
 	}
+}
+
+func TestLowerFirst(t *testing.T) {
+	assert.Equal(t, "", lowerFirst(""))
+	assert.Equal(t, "findSubIndex", lowerFirst("FindSubIndex"))
+	assert.Equal(t, "match", lowerFirst("match"))
+	assert.Equal(t, "xMatch", lowerFirst("XMatch"))
 }
 
 func TestFormatRunes(t *testing.T) {
