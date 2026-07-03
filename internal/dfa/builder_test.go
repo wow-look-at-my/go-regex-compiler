@@ -154,3 +154,75 @@ func TestMergeRuneRanges(t *testing.T) {
 		})
 	}
 }
+
+// simulateSearch runs a search DFA (BuildSearch) over input the way the
+// generated contains-mode code does: transition on each rune, restart at the
+// start state when no transition matches, and report true as soon as an
+// accepting state is entered.
+func simulateSearch(d *DFA, input string) bool {
+	if d.States[d.Start].Accept {
+		return true
+	}
+	state := d.Start
+	for _, r := range input {
+		next := d.Start
+		for _, tr := range d.States[state].Transitions {
+			if tr.Lo <= r && r <= tr.Hi {
+				next = tr.Next
+				break
+			}
+		}
+		if d.States[next].Accept {
+			return true
+		}
+		state = next
+	}
+	return false
+}
+
+func TestBuildSearchSeedsStartEverywhere(t *testing.T) {
+	prog := parse(t, "aab")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	// The classic overlap case: the match at offset 1 starts inside the
+	// failed attempt at offset 0. A restart-on-failure scanner misses it;
+	// the search DFA must not.
+	assert.True(t, simulateSearch(d, "aaab"))
+	assert.True(t, simulateSearch(d, "aab"))
+	assert.True(t, simulateSearch(d, "xxaabyy"))
+	assert.False(t, simulateSearch(d, "aa"))
+	assert.False(t, simulateSearch(d, "ab"))
+	assert.False(t, simulateSearch(d, ""))
+}
+
+func TestBuildSearchUnanchoredScan(t *testing.T) {
+	prog := parse(t, "a*b")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	assert.True(t, simulateSearch(d, "b"))
+	assert.True(t, simulateSearch(d, "zzzaaabzzz"))
+	assert.False(t, simulateSearch(d, "aaaa"))
+	assert.False(t, simulateSearch(d, "zzz"))
+}
+
+func TestBuildSearchEmptyPattern(t *testing.T) {
+	prog := parse(t, "")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+	assert.True(t, d.States[d.Start].Accept, "empty pattern matches everywhere")
+}
+
+func TestBuildSearchOmitsRestartTransitions(t *testing.T) {
+	prog := parse(t, "abc")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	for _, s := range d.States {
+		for _, tr := range s.Transitions {
+			assert.NotEqual(t, d.Start, tr.Next,
+				"transitions back to the start state must be omitted (state %d)", s.ID)
+		}
+	}
+}

@@ -34,7 +34,33 @@ go-regex-compiler --regex 'pattern' [flags]
 
 - **full** -- matches the entire string against the pattern
 - **prefix** -- matches if the string starts with the pattern
-- **contains** -- matches if any substring matches the pattern
+- **contains** -- matches if any substring matches the pattern. Compiled as a
+  single-pass unanchored search DFA (O(n) regardless of pattern shape); a
+  pattern that is one exact literal compiles to a `strings.Contains` call.
+
+### Empty-width assertions
+
+A DFA cannot inspect the characters around a boundary, so `^`, `$`, `\A`,
+`\z`, `\b`, and `\B` are only accepted where they are provably **always
+satisfied** for the chosen `--match` mode; anything else is rejected with an
+error explaining the construct (older versions silently ignored assertions
+and generated wrong matchers, e.g. `foo\bbar` full-matched `"foobar"`):
+
+- `^` / `\A` (and `(?m)^`) -- allowed at the start of the pattern in `full`
+  and `prefix` modes, which are start-anchored anyway. Rejected mid-pattern
+  and in `contains` mode.
+- `$` / `\z` (and `(?m)$`) -- allowed at the end of the pattern in `full`
+  mode. Rejected mid-pattern and in `prefix`/`contains` modes (a match may
+  end before the input does).
+- `\b` / `\B` -- allowed only where every possible neighboring-character
+  combination satisfies the assertion, e.g. `\bfoo...` or `...foo\b` in
+  `full` mode (text edge on one side, word characters on the other).
+  Rejected otherwise (`foo\bbar`, or `\berror` in `contains` mode, where the
+  character before the match is unknown).
+
+The `--submatch` functions evaluate all assertions exactly (their Thompson
+simulation checks them per position), but they share the pattern with the
+DFA matcher that gates them, so the same validation applies.
 
 ## Examples
 
@@ -64,7 +90,11 @@ The generated `ExtractDate` function returns `[]string` where index 0 is the ful
 ### Capture groups
 
 When `--submatch` is set, the generator emits a small family of functions that
-mirror the `regexp` API and share a single Thompson NFA core:
+mirror the `regexp` API and share a single Thompson NFA core. `--submatch`
+requires `--match full`: the submatch functions extract groups from a
+full-string match, so combining them with prefix/contains matching would be
+self-contradictory (the bool matcher could say true while the extractor
+returns `nil`).
 
 - **`<func>(input string) []string`** (default `FindSubmatch`) — positional
   extraction. Index 0 is the whole match, indices 1..N are the groups. A group
@@ -127,7 +157,7 @@ skipped and a one-line note is printed to stderr.
 2. **Build DFA** -- the NFA is converted to a DFA via subset construction
 3. **Generate code** -- the DFA is emitted as a Go function with a switch-based state machine
 
-For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`. Submatch extraction uses a Thompson NFA simulation with capture tracking, gated behind the DFA match for fast rejection. The simulation preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. The submatch functions are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
+For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`; invalid UTF-8 is handled exactly like `regexp` (each bad byte is matched as one U+FFFD rune). Submatch extraction uses a Thompson NFA simulation with capture tracking, gated behind the DFA match for fast rejection. The simulation preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. The submatch functions are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
 
 ## Benchmarks
 
