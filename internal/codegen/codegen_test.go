@@ -237,7 +237,7 @@ func TestGenerateSubmatch(t *testing.T) {
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
 			assert.Contains(t, output, "opRune")
 			assert.Contains(t, output, "addThread")
-			assert.Contains(t, output, "runeMatch")
+			assert.Contains(t, output, "RuneMatch")
 			// The NFA program + instruction type are hoisted to package scope,
 			// uniquely named per matcher, and built once (no per-call rebuild).
 			assert.Contains(t, output, "type findSubmatchIndexInst struct")
@@ -314,8 +314,8 @@ func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
 	assert.Contains(t, out, "func FindCaptures(input string) Captures")
 
 	// Empty-width assertion machinery is present in the core.
-	assert.Contains(t, out, "emptyOpsAt")
-	assert.Contains(t, out, "emptyWordBoundary")
+	assert.Contains(t, out, "EmptyOpsAt")
+	assert.Contains(t, out, "EmptyWordBoundary")
 }
 
 func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {

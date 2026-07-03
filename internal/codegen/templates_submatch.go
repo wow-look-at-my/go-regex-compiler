@@ -51,14 +51,98 @@ var {{ .Priv }}Prog = []{{ .Priv }}Inst{
 // {{ .Priv }}StartPC is the program counter the simulation seeds from.
 const {{ .Priv }}StartPC = {{ .StartPC }}
 
-// {{ .Priv }}Thread is a live NFA thread: a program counter plus capture slots.
-type {{ .Priv }}Thread struct {
-	pc   int
-	caps [{{ .NumSlots }}]int
+// NFA op codes (mirror the numeric ops baked into {{ .Priv }}Prog). Hoisted to
+// package scope so the recursive closure below is a plain method (no per-call
+// closure allocation) and inlines the constants directly.
+const (
+	{{ .Priv }}OpRune      = 0
+	{{ .Priv }}OpRune1     = 1
+	{{ .Priv }}OpRuneAny   = 2
+	{{ .Priv }}OpRuneAnyNL = 3
+	{{ .Priv }}OpAlt       = 4
+	{{ .Priv }}OpCapture   = 5
+	{{ .Priv }}OpMatch     = 6
+	{{ .Priv }}OpNop       = 7
+	{{ .Priv }}OpFail      = 8
+	{{ .Priv }}OpEmpty     = 9
+)
+
+// Empty-width assertion bits (from regexp/syntax.EmptyOp), inlined so the
+// generated code does not import regexp/syntax.
+const (
+	{{ .Priv }}EmptyBeginLine      = 1
+	{{ .Priv }}EmptyEndLine        = 2
+	{{ .Priv }}EmptyBeginText      = 4
+	{{ .Priv }}EmptyEndText        = 8
+	{{ .Priv }}EmptyWordBoundary   = 16
+	{{ .Priv }}EmptyNoWordBoundary = 32
+)
+
+// {{ .Priv }}IsWordChar reports whether r is a word character ([0-9A-Za-z_]).
+func {{ .Priv }}IsWordChar(r rune) bool {
+	return r == '_' ||
+		(r >= '0' && r <= '9') ||
+		(r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z')
 }
 
-// {{ .Priv }}Frame is a work item on the epsilon-closure DFS stack.
-type {{ .Priv }}Frame struct {
+// {{ .Priv }}EmptyOpsAt computes the satisfied empty-width assertion bits at the
+// boundary between the rune before (bp) and the rune after (ap) the current
+// position. bp/ap are -1 at the text edges.
+func {{ .Priv }}EmptyOpsAt(bp, ap rune) int {
+	var op int
+	if bp < 0 {
+		op |= {{ .Priv }}EmptyBeginText | {{ .Priv }}EmptyBeginLine
+	}
+	if bp == '\n' {
+		op |= {{ .Priv }}EmptyBeginLine
+	}
+	if ap < 0 {
+		op |= {{ .Priv }}EmptyEndText | {{ .Priv }}EmptyEndLine
+	}
+	if ap == '\n' {
+		op |= {{ .Priv }}EmptyEndLine
+	}
+	beforeWord := bp >= 0 && {{ .Priv }}IsWordChar(bp)
+	afterWord := ap >= 0 && {{ .Priv }}IsWordChar(ap)
+	if beforeWord != afterWord {
+		op |= {{ .Priv }}EmptyWordBoundary
+	} else {
+		op |= {{ .Priv }}EmptyNoWordBoundary
+	}
+	return op
+}
+
+// {{ .Priv }}RuneMatch reports whether the consuming instruction inst matches
+// rune r (opRune scans the class's [lo,hi] range pairs; a trailing odd rune is a
+// singleton).
+func {{ .Priv }}RuneMatch(inst *{{ .Priv }}Inst, r rune) bool {
+	switch inst.op {
+	case {{ .Priv }}OpRuneAny:
+		return true
+	case {{ .Priv }}OpRuneAnyNL:
+		return r != '\n'
+	case {{ .Priv }}OpRune1:
+		return len(inst.runes) > 0 && inst.runes[0] == r
+	case {{ .Priv }}OpRune:
+		for i := 0; i < len(inst.runes)-1; i += 2 {
+			if r >= inst.runes[i] && r <= inst.runes[i+1] {
+				return true
+			}
+		}
+		if len(inst.runes)%2 == 1 {
+			return r == inst.runes[len(inst.runes)-1]
+		}
+		return false
+	}
+	return false
+}
+
+// {{ .Priv }}Thread is a live NFA thread: a program counter plus a snapshot of
+// its capture slots. The snapshot is copied out of the shared work vector only
+// when the thread is actually enqueued (once per surviving thread per position),
+// not on every epsilon-closure step.
+type {{ .Priv }}Thread struct {
 	pc   int
 	caps [{{ .NumSlots }}]int
 }
@@ -66,12 +150,19 @@ type {{ .Priv }}Frame struct {
 // {{ .Priv }}Scratch is the reusable per-call working set for {{ .IndexFuncName }},
 // drawn from a sync.Pool so a steady-state call allocates only its result slice.
 // visited is a generation-stamped seen-set: visited[pc] == gen means pc was
-// already enqueued during the current addThread call, replacing a per-position
+// already enqueued during the current epsilon-closure, replacing a per-position
 // map[int]bool (no per-position allocation, no map hashing on the hot path).
+// work holds the single capture vector threaded through the recursive closure:
+// captures are written in place on descent and restored on unwind, so a fork of
+// the closure costs a pc, not a 2*(N+1)-int copy. before/after/ops carry the
+// boundary context for the empty-width assertions at the current position.
 type {{ .Priv }}Scratch struct {
 	visited []uint32
 	gen     uint32
-	stack   []{{ .Priv }}Frame
+	work    [{{ .NumSlots }}]int
+	ops     int
+	before  rune
+	after   rune
 	cur     []{{ .Priv }}Thread
 	next    []{{ .Priv }}Thread
 }
@@ -83,11 +174,82 @@ var {{ .Priv }}Pool = sync.Pool{New: func() any {
 	n := len({{ .Priv }}Prog)
 	return &{{ .Priv }}Scratch{
 		visited: make([]uint32, n),
-		stack:   make([]{{ .Priv }}Frame, 0, n),
 		cur:     make([]{{ .Priv }}Thread, 0, n),
 		next:    make([]{{ .Priv }}Thread, 0, n),
 	}
 }}
+
+// seed resets the per-position closure state (generation stamp, work vector,
+// boundary context) and computes the epsilon-closure of pc into list. caps is
+// the starting capture snapshot of the thread being advanced; it is copied into
+// work exactly once here.
+func (sc *{{ .Priv }}Scratch) seed(list []{{ .Priv }}Thread, caps *[{{ .NumSlots }}]int, pc, pos int, before, after rune) []{{ .Priv }}Thread {
+	sc.gen++
+	if sc.gen == 0 { // counter wrapped: clear stale stamps and restart
+		for i := range sc.visited {
+			sc.visited[i] = 0
+		}
+		sc.gen = 1
+	}
+	sc.work = *caps
+	sc.ops = -1
+	sc.before = before
+	sc.after = after
+	return sc.addThread(list, pc, pos)
+}
+
+// addThread computes the epsilon-closure of pc, appending every reachable
+// consuming (or match) instruction to list and returning the extended list.
+// Thread priority is preserved (leftmost-first, matching Go's default regexp
+// engine): the high-priority branch (out) is explored before the low-priority
+// branch (arg) of each alternation, and the generation-stamped visited set makes
+// the first (highest-priority) path to a pc win. Captures are tracked in the
+// shared work vector with save/restore, so descent never copies the capture set;
+// the only copy is the snapshot taken when a thread is enqueued.
+func (sc *{{ .Priv }}Scratch) addThread(list []{{ .Priv }}Thread, pc, pos int) []{{ .Priv }}Thread {
+	// Single-successor ops (opNop, a satisfied opEmpty, opAlt's low-priority
+	// branch, an out-of-range opCapture) advance pc in place; only opAlt's high
+	// branch and an in-range opCapture recurse, halving the call count of a naive
+	// per-instruction recursion. Go has no tail-call optimization, so this loop
+	// is a measurable win over recursing on every edge.
+	for {
+		if pc < 0 || pc >= len({{ .Priv }}Prog) || sc.visited[pc] == sc.gen {
+			return list
+		}
+		sc.visited[pc] = sc.gen
+		inst := &{{ .Priv }}Prog[pc]
+		switch inst.op {
+		case {{ .Priv }}OpAlt:
+			// High priority (out) first (recurse), then low priority (arg: loop).
+			list = sc.addThread(list, inst.out, pos)
+			pc = inst.arg
+		case {{ .Priv }}OpNop:
+			pc = inst.out
+		case {{ .Priv }}OpEmpty:
+			if sc.ops < 0 {
+				sc.ops = {{ .Priv }}EmptyOpsAt(sc.before, sc.after)
+			}
+			// The assertion holds iff every required bit is satisfied.
+			if inst.arg&^sc.ops != 0 {
+				return list
+			}
+			pc = inst.out
+		case {{ .Priv }}OpCapture:
+			if inst.arg < {{ .NumSlots }} {
+				saved := sc.work[inst.arg]
+				sc.work[inst.arg] = pos
+				list = sc.addThread(list, inst.out, pos)
+				sc.work[inst.arg] = saved // restore on unwind
+				return list
+			}
+			pc = inst.out
+		default:
+			// Consuming (opRune*) or opMatch: enqueue with a snapshot of the
+			// captures accumulated along this (highest-priority) path.
+			return append(list, {{ .Priv }}Thread{pc: pc, caps: sc.work})
+		}
+	}
+}
 {{ end -}}
 `
 
@@ -110,153 +272,11 @@ func {{ .IndexFuncName }}(input string) []int {
 
 const nfaSimTemplate = `
 {{- define "nfaSim" -}}
-	// NFA op codes (mirror the numeric ops baked into {{ .Priv }}Prog).
-	const (
-		opRune      = 0
-		opRune1     = 1
-		opRuneAny   = 2
-		opRuneAnyNL = 3
-		opAlt       = 4
-		opCapture   = 5
-		opMatch     = 6
-		opNop       = 7
-		opFail      = 8
-		opEmpty     = 9
-	)
-
-	// Empty-width assertion bits (from regexp/syntax.EmptyOp), inlined so the
-	// generated code does not import regexp/syntax.
-	const (
-		emptyBeginLine      = 1
-		emptyEndLine        = 2
-		emptyBeginText      = 4
-		emptyEndText        = 8
-		emptyWordBoundary   = 16
-		emptyNoWordBoundary = 32
-	)
-
-	// isWordChar reports whether r is a word character ([0-9A-Za-z_]).
-	isWordChar := func(r rune) bool {
-		return r == '_' ||
-			(r >= '0' && r <= '9') ||
-			(r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z')
-	}
-
-	// emptyOpsAt computes the satisfied empty-width assertion bits at the
-	// boundary between the rune before (bp) and the rune after (ap) the current
-	// position. bp/ap are -1 at the text edges.
-	emptyOpsAt := func(bp, ap rune) int {
-		var op int
-		if bp < 0 {
-			op |= emptyBeginText | emptyBeginLine
-		}
-		if bp == '\n' {
-			op |= emptyBeginLine
-		}
-		if ap < 0 {
-			op |= emptyEndText | emptyEndLine
-		}
-		if ap == '\n' {
-			op |= emptyEndLine
-		}
-		beforeWord := bp >= 0 && isWordChar(bp)
-		afterWord := ap >= 0 && isWordChar(ap)
-		if beforeWord != afterWord {
-			op |= emptyWordBoundary
-		} else {
-			op |= emptyNoWordBoundary
-		}
-		return op
-	}
-
-	// Borrow a reusable working set. The pooled buffers (visited/stack/cur/next)
+	// Borrow a reusable working set. The pooled buffers (visited/work/cur/next)
 	// are the only mutable state, so no allocation-heavy per-position scratch is
 	// needed and concurrent calls each get their own set.
 	sc := {{ .Priv }}Pool.Get().(*{{ .Priv }}Scratch)
 	defer {{ .Priv }}Pool.Put(sc)
-
-	// addThread computes the epsilon-closure of pc into list, tracking captures.
-	// Thread priority is preserved (leftmost-first, matching Go's default regexp
-	// engine): the DFS explores the high-priority branch (out) before the
-	// low-priority branch (arg) of each alternation. Visited membership uses a
-	// generation stamp so the scratch is reused without clearing between calls.
-	addThread := func(list []{{ .Priv }}Thread, pc int, caps [{{ .NumSlots }}]int, pos int, before, after rune) []{{ .Priv }}Thread {
-		sc.gen++
-		if sc.gen == 0 { // counter wrapped: clear stale stamps and restart
-			for i := range sc.visited {
-				sc.visited[i] = 0
-			}
-			sc.gen = 1
-		}
-		gen := sc.gen
-		stack := sc.stack[:0]
-		stack = append(stack, {{ .Priv }}Frame{pc: pc, caps: caps})
-		// emptyOps for this position, computed lazily on the first opEmpty.
-		ops := -1
-		for len(stack) > 0 {
-			f := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if f.pc < 0 || f.pc >= len({{ .Priv }}Prog) || sc.visited[f.pc] == gen {
-				continue
-			}
-			sc.visited[f.pc] = gen
-			inst := &{{ .Priv }}Prog[f.pc]
-			switch inst.op {
-			case opAlt:
-				// Push low priority first so high priority (out) is processed first.
-				stack = append(stack, {{ .Priv }}Frame{pc: inst.arg, caps: f.caps})
-				stack = append(stack, {{ .Priv }}Frame{pc: inst.out, caps: f.caps})
-			case opNop:
-				stack = append(stack, {{ .Priv }}Frame{pc: inst.out, caps: f.caps})
-			case opEmpty:
-				if ops < 0 {
-					ops = emptyOpsAt(before, after)
-				}
-				// The assertion holds iff every required bit is satisfied.
-				if inst.arg&^ops == 0 {
-					stack = append(stack, {{ .Priv }}Frame{pc: inst.out, caps: f.caps})
-				}
-			case opCapture:
-				newCaps := f.caps
-				if inst.arg < {{ .NumSlots }} {
-					newCaps[inst.arg] = pos
-				}
-				stack = append(stack, {{ .Priv }}Frame{pc: inst.out, caps: newCaps})
-			default:
-				list = append(list, {{ .Priv }}Thread{pc: f.pc, caps: f.caps})
-			}
-		}
-		sc.stack = stack // retain the (possibly grown) backing array
-		return list
-	}
-
-	runeMatch := func(inst *{{ .Priv }}Inst, r rune) bool {
-		switch inst.op {
-		case opRuneAny:
-			return true
-		case opRuneAnyNL:
-			return r != '\n'
-		case opRune1:
-			if len(inst.runes) > 0 && inst.runes[0] == r {
-				return true
-			}
-			return false
-		case opRune:
-			for i := 0; i < len(inst.runes)-1; i += 2 {
-				if r >= inst.runes[i] && r <= inst.runes[i+1] {
-					return true
-				}
-			}
-			if len(inst.runes)%2 == 1 {
-				if r == inst.runes[len(inst.runes)-1] {
-					return true
-				}
-			}
-			return false
-		}
-		return false
-	}
 
 	var initCaps [{{ .NumSlots }}]int
 	for i := range initCaps {
@@ -265,7 +285,10 @@ const nfaSimTemplate = `
 	initCaps[0] = 0 // group 0 start = beginning of input
 
 	// Peek the first rune (range decodes UTF-8) for the seed's "after" context;
-	// no unicode/utf8 import is needed.
+	// no unicode/utf8 import is needed. range already fast-paths single-byte
+	// (ASCII) runes, so a dedicated byte loop was measured and dropped: it beat
+	// this path by only ~3% on long ASCII input and lost on short (the capture
+	// closure, not the decode, dominates — see the PR notes).
 	var firstRune rune = -1
 	for _, r := range input {
 		firstRune = r
@@ -273,7 +296,7 @@ const nfaSimTemplate = `
 	}
 
 	// Seed at position 0. before = -1 (text begin); after = first rune (or -1).
-	cur := addThread(sc.cur[:0], {{ .Priv }}StartPC, initCaps, 0, -1, firstRune)
+	cur := sc.seed(sc.cur[:0], &initCaps, {{ .Priv }}StartPC, 0, -1, firstRune)
 	next := sc.next[:0]
 
 	// Single pass over the input. A rune consumed at this step ends exactly where
@@ -284,10 +307,11 @@ const nfaSimTemplate = `
 	for i, r := range input {
 		if havePrev {
 			next = next[:0]
-			for _, t := range cur {
+			for k := range cur {
+				t := &cur[k]
 				inst := &{{ .Priv }}Prog[t.pc]
-				if runeMatch(inst, prevRune) {
-					next = addThread(next, inst.out, t.caps, i, prevRune, r)
+				if {{ .Priv }}RuneMatch(inst, prevRune) {
+					next = sc.seed(next, &t.caps, inst.out, i, prevRune, r)
 				}
 			}
 			cur, next = next, cur
@@ -297,10 +321,11 @@ const nfaSimTemplate = `
 	}
 	if havePrev { // consume the final rune; after = -1 (text end)
 		next = next[:0]
-		for _, t := range cur {
+		for k := range cur {
+			t := &cur[k]
 			inst := &{{ .Priv }}Prog[t.pc]
-			if runeMatch(inst, prevRune) {
-				next = addThread(next, inst.out, t.caps, len(input), prevRune, -1)
+			if {{ .Priv }}RuneMatch(inst, prevRune) {
+				next = sc.seed(next, &t.caps, inst.out, len(input), prevRune, -1)
 			}
 		}
 		cur, next = next, cur
@@ -308,11 +333,12 @@ const nfaSimTemplate = `
 	sc.cur = cur[:0]   // retain both backing arrays for the next pooled use
 	sc.next = next[:0]
 
-	for _, t := range cur {
-		if t.pc < len({{ .Priv }}Prog) && {{ .Priv }}Prog[t.pc].op == opMatch {
-			t.caps[1] = len(input) // group 0 end
+	for k := range cur {
+		t := &cur[k]
+		if t.pc < len({{ .Priv }}Prog) && {{ .Priv }}Prog[t.pc].op == {{ .Priv }}OpMatch {
 			result := make([]int, {{ .NumSlots }})
 			copy(result, t.caps[:])
+			result[1] = len(input) // group 0 end
 			return result
 		}
 	}
