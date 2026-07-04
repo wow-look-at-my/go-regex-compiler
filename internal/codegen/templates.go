@@ -48,12 +48,9 @@ const allTemplates = headerTemplate +
 	statesTemplate +
 	acceptCheckTemplate +
 	submatchFuncTemplate +
-	submatchIndexFuncTemplate +
 	submatchStringFuncTemplate +
 	submatchNamesFuncTemplate +
 	submatchStructFuncTemplate +
-	nfaPackageDeclsTemplate +
-	nfaSimTemplate +
 	onepassIndexFuncTemplate +
 	tdfaIndexFuncTemplate
 
@@ -74,9 +71,6 @@ import "strings"
 {{ end }}
 {{ if .NeedUTF8 }}
 import "unicode/utf8"
-{{ end }}
-{{ if .NeedSync }}
-import "sync"
 {{ end }}
 {{ end -}}
 `

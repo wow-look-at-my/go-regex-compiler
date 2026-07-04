@@ -248,8 +248,7 @@ func TestInteriorNegWordBoundaryFolds(t *testing.T) {
 }
 
 // TestBuildSubmatchContextTDFA verifies a pattern the one-pass path rejects
-// compiles via the TDFA register machine (not the interpreter): TDFA is set,
-// Onepass is not, and no Thompson instruction table is built.
+// compiles via the TDFA register machine: TDFA is set and Onepass is not.
 func TestBuildSubmatchContextTDFA(t *testing.T) {
 	prog, n := compileProg(t, `(a*)(a*)`)
 	ctx, err := buildSubmatchContext(SubmatchOptions{
@@ -262,25 +261,5 @@ func TestBuildSubmatchContextTDFA(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ctx.Onepass, "ambiguous pattern is not one-pass")
 	assert.True(t, ctx.TDFA, "ambiguous pattern must compile via TDFA")
-	assert.Empty(t, ctx.Instructions, "compiled path must not build an instruction table")
 	assert.NotEmpty(t, ctx.TDStates, "TDFA path must have automaton states")
-}
-
-// TestBuildSubmatchContextInterpreterOracle verifies the interpreter remains
-// reachable ONLY via the explicit ForceInterpreter oracle flag (used for
-// differential testing), never on the normal generation path.
-func TestBuildSubmatchContextInterpreterOracle(t *testing.T) {
-	prog, n := compileProg(t, `(a*)(a*)`)
-	ctx, err := buildSubmatchContext(SubmatchOptions{
-		FuncName:         "FindSub",
-		MatchFunc:        "Match",
-		Regex:            `(a*)(a*)`,
-		Prog:             prog,
-		NumGroups:        n,
-		ForceInterpreter: true,
-	})
-	require.NoError(t, err)
-	assert.False(t, ctx.Onepass)
-	assert.False(t, ctx.TDFA)
-	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 }

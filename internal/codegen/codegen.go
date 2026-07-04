@@ -56,11 +56,10 @@ type templateContext struct {
 	HasRanges          bool
 	HasSubmatch        bool // a submatch family is generated
 
-	// Import need-flags, computed in Generate once the submatch path (compiled
-	// vs. interpreter) is known, since that decides which packages are used.
+	// Import need-flags, computed in Generate once the submatch path (one-pass
+	// vs. TDFA) is known, since that decides which packages are used.
 	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
 	NeedUTF8  bool // unicode/utf8
-	NeedSync  bool // sync (only the Thompson interpreter fallback uses sync.Pool)
 
 	// EarlyAccept is set for modes where reaching ANY accepting state proves a
 	// match (prefix: some prefix matched). Transitions into an accepting state
@@ -115,12 +114,10 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 
 	// Decide imports now that the submatch path is known. The bool matcher is
 	// always emitted; the compiled submatch paths (one-pass and TDFA) add
-	// match.InRange/utf8 as they need them, while only the Thompson interpreter
-	// ORACLE (ForceInterpreter) uses sync.Pool.
-	compiled := subCtx.Onepass || subCtx.TDFA
-	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && compiled && subCtx.HasRanges)
-	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && compiled && !subCtx.ASCII)
-	ctx.NeedSync = ctx.HasSubmatch && !compiled
+	// match.InRange/utf8 as they need them. There is no interpreter path, so no
+	// generated code ever imports sync.
+	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && subCtx.HasRanges)
+	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && !subCtx.ASCII)
 
 	var buf bytes.Buffer
 

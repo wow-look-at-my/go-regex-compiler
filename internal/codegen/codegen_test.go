@@ -467,44 +467,11 @@ func countGroups(re *syntax.Regexp) int {
 	return n
 }
 
-func TestInstOpName(t *testing.T) {
-	tests := []struct {
-		op       syntax.InstOp
-		want     string
-		wantCode int
-	}{
-		{syntax.InstRune, "opRune", 0},
-		{syntax.InstRune1, "opRune1", 1},
-		{syntax.InstRuneAny, "opRuneAny", 2},
-		{syntax.InstRuneAnyNotNL, "opRuneAnyNL", 3},
-		{syntax.InstAlt, "opAlt", 4},
-		{syntax.InstAltMatch, "opAlt", 4},
-		{syntax.InstCapture, "opCapture", 5},
-		{syntax.InstMatch, "opMatch", 6},
-		{syntax.InstNop, "opNop", 7},
-		{syntax.InstFail, "opFail", 8},
-		{syntax.InstEmptyWidth, "opEmpty", 9},
-		{syntax.InstOp(255), "255", 255},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, instOpName(tt.op))
-		// instOpCode must agree with the numeric op baked into the program table
-		// and, for known ops, index the symbolic name emitted in the sim.
-		assert.Equal(t, tt.wantCode, instOpCode(tt.op), "op code for %s", tt.want)
-	}
-}
-
 func TestLowerFirst(t *testing.T) {
 	assert.Equal(t, "", lowerFirst(""))
 	assert.Equal(t, "findSubIndex", lowerFirst("FindSubIndex"))
 	assert.Equal(t, "match", lowerFirst("match"))
 	assert.Equal(t, "xMatch", lowerFirst("XMatch"))
-}
-
-func TestFormatRunes(t *testing.T) {
-	assert.Equal(t, "[]rune{97}", formatRunes([]rune{'a'}))
-	assert.Equal(t, "[]rune{97, 122}", formatRunes([]rune{'a', 'z'}))
-	assert.Equal(t, "[]rune{48, 57, 65, 90}", formatRunes([]rune{'0', '9', 'A', 'Z'}))
 }
 
 func TestBuildSubmatchContext(t *testing.T) {
@@ -527,12 +494,9 @@ func TestBuildSubmatchContext(t *testing.T) {
 	assert.Equal(t, "Match", ctx.MatchFunc)
 	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
 	assert.Equal(t, 3, ctx.NumGroups) // 6/2
-	assert.Equal(t, prog.Start, ctx.StartPC)
 
-	// This pattern is one-pass, so the compiled automaton drives emission and
-	// the Thompson instruction table is not built.
+	// This pattern is one-pass, so the compiled automaton drives emission.
 	assert.True(t, ctx.Onepass, "expected one-pass compilation")
-	assert.Empty(t, ctx.Instructions, "compiled path must not build an instruction table")
 	assert.NotEmpty(t, ctx.OPStates, "compiled path must have automaton states")
 	assert.True(t, ctx.OPHasAccept, "compiled path must have an accepting state")
 }

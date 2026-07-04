@@ -14,7 +14,7 @@ package codegen
 // ever needed. When that holds, the whole match is a single deterministic walk
 // and captures can be baked onto the transitions. When it does not hold (real
 // capture ambiguity), buildCapDFA returns ok=false and the caller falls back to
-// the Thompson interpreter for correctness.
+// the TDFA register machine (tdfa.go); there is no run-time interpreter.
 
 import (
 	"regexp/syntax"
