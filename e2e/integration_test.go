@@ -278,6 +278,32 @@ func TestIntegrationPrefix(t *testing.T) {
 				{"", false},
 			},
 		},
+		{
+			// Regression: the match passes THROUGH an accepting state ("a"
+			// accepts) before the DFA dies trying to extend to "abc". The old
+			// codegen only tested the state the DFA died in and returned false
+			// for "ab" and "abx" despite the matching prefix "a".
+			name: "a(bc)?", matchFn: MatchPrefixOptional,
+			cases: []testCase{
+				{"a", true},
+				{"ab", true},  // prefix "a" matches (bc incomplete)
+				{"abx", true}, // prefix "a" matches (bc abandoned)
+				{"abc", true},
+				{"abcx", true},
+				{"x", false},
+				{"", false},
+			},
+		},
+		{
+			// Regression: start state accepting means the empty prefix always
+			// matches, whatever the input.
+			name: "a*", matchFn: MatchPrefixAStar,
+			cases: []testCase{
+				{"", true},
+				{"aaa", true},
+				{"zzz", true}, // empty prefix matches
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +349,56 @@ func TestIntegrationContains(t *testing.T) {
 				{"error", true},
 				{"an error occurred", true},
 				{"ERROR", false},
+				{"", false},
+				{"errerror", true}, // match starts inside a failed attempt
+				{"erroerror", true},
+			},
+		},
+		{
+			// Regression: self-overlapping literal. A failed attempt must not
+			// swallow the start of the real match.
+			name: "aab", matchFn: MatchContainsOverlap,
+			cases: []testCase{
+				{"aab", true},
+				{"aaab", true},  // match at offset 1, overlapping the failed attempt at 0
+				{"aaaab", true}, // match at offset 2
+				{"xaabx", true},
+				{"ab", false},
+				{"aa", false},
+				{"", false},
+			},
+		},
+		{
+			// Same overlap regression through the DFA scan loop (the pattern
+			// is not a pure literal, so no strings.Contains shortcut).
+			name: "aa[bc]", matchFn: MatchContainsOverlapClass,
+			cases: []testCase{
+				{"aab", true},
+				{"aac", true},
+				{"aaab", true},  // match at offset 1, inside the failed attempt at 0
+				{"aaaac", true}, // match at offset 2
+				{"aad", false},
+				{"ab", false},
+				{"", false},
+			},
+		},
+		{
+			name: "a*b", matchFn: MatchContainsAStarB,
+			cases: []testCase{
+				{"b", true},
+				{"aaab", true},
+				{"xxaab", true},
+				{strings.Repeat("a", 5000), false}, // worst case of the old O(n^2) loop
+				{"", false},
+			},
+		},
+		{
+			name: `[\x{00C0}-\x{00FF}]+`, matchFn: MatchContainsUnicode,
+			cases: []testCase{
+				{"café", true},
+				{"naïve tea", true},
+				{"plain ascii", false},
+				{"\xff\xfe", false}, // invalid UTF-8 is not in the class
 				{"", false},
 			},
 		},
