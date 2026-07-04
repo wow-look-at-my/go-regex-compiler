@@ -40,6 +40,18 @@ type submatchContext struct {
 	StartPC       int
 	Instructions  []nfaInstruction
 
+	// Onepass selects the COMPILED capture matcher (a straight-line `switch
+	// state` automaton with inline caps[k]=pos writes and no interpreter) over
+	// the Thompson-NFA fallback. When true the OP* fields below drive emission
+	// and Instructions/the package-level program are not used.
+	Onepass     bool
+	OPStart     int
+	OPStates    []onepassEmitState
+	OPAccepts   []onepassAccept
+	OPHasAccept bool
+	ASCII       bool // compiled path: byte fast-path vs. rune decoding
+	HasRanges   bool // compiled path: any match.InRange call emitted
+
 	// Priv is an unexported, per-matcher identifier prefix (the index func name
 	// with a lower-cased first rune). It uniquely names the package-level NFA
 	// program, instruction/thread/frame types, and scratch pool that the hot
@@ -102,18 +114,26 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		GroupNames:    normalizeGroupNames(opts.GroupNames, opts.NumGroups),
 	}
 
-	for i, inst := range opts.Prog.Inst {
-		ni := nfaInstruction{
-			Index:  i,
-			OpName: instOpName(inst.Op),
-			OpCode: instOpCode(inst.Op),
-			Out:    inst.Out,
-			Arg:    int(inst.Arg),
+	// Prefer the compiled one-pass matcher: if the pattern admits a single
+	// deterministic pass, emit a straight-line `switch state` automaton with
+	// inline capture writes and NO interpreter. Otherwise fall back to the
+	// Thompson NFA program below (correctness path for ambiguous captures).
+	if d, ok := buildCapDFA(opts.Prog, opts.NumGroups); ok {
+		fillOnepass(&ctx, d)
+	} else {
+		for i, inst := range opts.Prog.Inst {
+			ni := nfaInstruction{
+				Index:  i,
+				OpName: instOpName(inst.Op),
+				OpCode: instOpCode(inst.Op),
+				Out:    inst.Out,
+				Arg:    int(inst.Arg),
+			}
+			if len(inst.Rune) > 0 {
+				ni.Runes = formatRunes(inst.Rune)
+			}
+			ctx.Instructions = append(ctx.Instructions, ni)
 		}
-		if len(inst.Rune) > 0 {
-			ni.Runes = formatRunes(inst.Rune)
-		}
-		ctx.Instructions = append(ctx.Instructions, ni)
 	}
 
 	// Decide whether to emit the typed struct: opt-in AND at least one named

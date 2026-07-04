@@ -235,15 +235,27 @@ func TestGenerateSubmatch(t *testing.T) {
 			output := buf.String()
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
-			assert.Contains(t, output, "opRune")
-			assert.Contains(t, output, "addThread")
-			assert.Contains(t, output, "RuneMatch")
-			// The NFA program + instruction type are hoisted to package scope,
-			// uniquely named per matcher, and built once (no per-call rebuild).
-			assert.Contains(t, output, "type findSubmatchIndexInst struct")
-			assert.Contains(t, output, "var findSubmatchIndexProg = []findSubmatchIndexInst{")
-			assert.Contains(t, output, "sync.Pool")
-			// The per-position map is gone: no map allocation in the hot path.
+			assert.Contains(t, output, "func FindSubmatchIndex(input string) []int")
+
+			if strings.Contains(output, "addThread") {
+				// Thompson interpreter fallback (ambiguous captures): the
+				// package-level NFA program + op-dispatch sim must be present.
+				assert.Contains(t, output, "opRune")
+				assert.Contains(t, output, "RuneMatch")
+				assert.Contains(t, output, "type findSubmatchIndexInst struct")
+				assert.Contains(t, output, "var findSubmatchIndexProg = []findSubmatchIndexInst{")
+				assert.Contains(t, output, "sync.Pool")
+			} else {
+				// Compiled one-pass matcher: a straight-line `switch state`
+				// automaton with inline capture writes and NO interpreter —
+				// no program table, thread lists, epsilon-closure, or pool.
+				assert.Contains(t, output, "switch state {")
+				assert.Contains(t, output, "caps[")
+				assert.NotContains(t, output, "findSubmatchIndexProg")
+				assert.NotContains(t, output, "RuneMatch")
+				assert.NotContains(t, output, "sync.Pool")
+			}
+			// The per-position map is gone from every path.
 			assert.NotContains(t, output, "make(map[int]bool)")
 		})
 	}
@@ -313,9 +325,12 @@ func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
 	assert.Contains(t, out, "Matched bool")
 	assert.Contains(t, out, "func FindCaptures(input string) Captures")
 
-	// Empty-width assertion machinery is present in the core.
-	assert.Contains(t, out, "EmptyOpsAt")
-	assert.Contains(t, out, "EmptyWordBoundary")
+	// This pattern is one-pass, so the core is the COMPILED automaton: a
+	// `switch state` machine with inline capture writes and no interpreter.
+	assert.Contains(t, out, "switch state {")
+	assert.Contains(t, out, "caps[")
+	assert.NotContains(t, out, "addThread")
+	assert.NotContains(t, out, "sync.Pool")
 }
 
 func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {
@@ -440,17 +455,13 @@ func TestBuildSubmatchContext(t *testing.T) {
 	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
 	assert.Equal(t, 3, ctx.NumGroups) // 6/2
 	assert.Equal(t, prog.Start, ctx.StartPC)
-	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 
-	// Verify at least one instruction has runes
-	hasRunes := false
-	for _, inst := range ctx.Instructions {
-		if inst.Runes != "" {
-			hasRunes = true
-			break
-		}
-	}
-	assert.True(t, hasRunes, "expected at least one instruction with runes")
+	// This pattern is one-pass, so the compiled automaton drives emission and
+	// the Thompson instruction table is not built.
+	assert.True(t, ctx.Onepass, "expected one-pass compilation")
+	assert.Empty(t, ctx.Instructions, "compiled path must not build an instruction table")
+	assert.NotEmpty(t, ctx.OPStates, "compiled path must have automaton states")
+	assert.True(t, ctx.OPHasAccept, "compiled path must have an accepting state")
 }
 
 func TestGenerateChainCompression(t *testing.T) {

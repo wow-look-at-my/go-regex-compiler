@@ -28,7 +28,14 @@ The pipeline has three stages:
 2. **dfa.Build** converts the NFA to a DFA via subset construction
 3. **codegen.Generate** emits Go source from the DFA using `text/template`
 
-Match modes (full/prefix/contains) and ASCII vs Unicode are handled by separate templates in `internal/codegen/templates.go`. Submatch extraction uses a Thompson NFA simulation gated behind the DFA match.
+Match modes (full/prefix/contains) and ASCII vs Unicode are handled by separate templates in `internal/codegen/templates.go`.
+
+Submatch extraction has two paths, chosen per pattern:
+
+- **Compiled one-pass path** (`internal/codegen/onepass.go`, `onepass_emit.go`, `templates_onepass.go`): when the pattern is one-pass (every input rune deterministically selects the next step), `buildCapDFA` constructs a capture-annotated DFA — states are sets of NFA `(consuming-inst, pending-captures)` configs, transitions carry the capture-slot writes crossed to reach them — and the `<func>Index` core is emitted as a `switch state` automaton with inline `caps[k] = pos` writes and NO interpreter (no program table, thread list, epsilon-closure, or `sync.Pool`). This is real codegen and outruns stdlib on the match path.
+- **Thompson interpreter fallback** (`templates_submatch.go`): for patterns with genuine capture ambiguity or empty-width assertions the compiled path rejects (`buildCapDFA` returns `ok=false`), it emits the shared Thompson NFA simulation gated behind the DFA match.
+
+Both are verified byte-for-byte against stdlib in `e2e/submatch_parity_test.go`.
 
 ## Key details
 

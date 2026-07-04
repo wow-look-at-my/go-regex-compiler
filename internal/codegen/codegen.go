@@ -47,7 +47,13 @@ type templateContext struct {
 	StartAccepts       bool // start state is accepting (for contains early-return)
 	NumChains          int
 	HasRanges          bool
-	HasSubmatch        bool // a submatch family is generated (needs the sync import)
+	HasSubmatch        bool // a submatch family is generated
+
+	// Import need-flags, computed in Generate once the submatch path (compiled
+	// vs. interpreter) is known, since that decides which packages are used.
+	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
+	NeedUTF8  bool // unicode/utf8
+	NeedSync  bool // sync (only the Thompson interpreter fallback uses sync.Pool)
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -73,6 +79,18 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	ctx := buildContext(d, opts)
 	ctx.HasSubmatch = opts.Submatch != nil
 
+	var subCtx submatchContext
+	if opts.Submatch != nil {
+		subCtx = buildSubmatchContext(*opts.Submatch)
+	}
+
+	// Decide imports now that the submatch path is known. The bool matcher is
+	// always emitted; the compiled submatch path adds match.InRange/utf8 as it
+	// needs them, while only the Thompson interpreter fallback uses sync.Pool.
+	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && subCtx.Onepass && subCtx.HasRanges)
+	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && subCtx.Onepass && !subCtx.ASCII)
+	ctx.NeedSync = ctx.HasSubmatch && !subCtx.Onepass
+
 	var buf bytes.Buffer
 
 	if err := tmpl.ExecuteTemplate(&buf, "header", ctx); err != nil {
@@ -83,7 +101,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	}
 
 	if opts.Submatch != nil {
-		subCtx := buildSubmatchContext(*opts.Submatch)
 		if err := tmpl.ExecuteTemplate(&buf, "submatchFunc", subCtx); err != nil {
 			return fmt.Errorf("executing submatchFunc template: %w", err)
 		}

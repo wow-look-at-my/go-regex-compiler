@@ -64,7 +64,16 @@ The generated `ExtractDate` function returns `[]string` where index 0 is the ful
 ### Capture groups
 
 When `--submatch` is set, the generator emits a small family of functions that
-mirror the `regexp` API and share a single Thompson NFA core:
+mirror the `regexp` API. The core `<func>Index` is **compiled directly to a
+`switch state` automaton** whenever the pattern is *one-pass* (the next input
+rune always determines the next step unambiguously): capture-group byte offsets
+are written inline (`caps[k] = pos`) on the transitions that cross a group
+boundary, with **no** instruction table, thread list, or epsilon-closure at run
+time — the automaton *is* the Go control flow, allocating only the result slice
+and beating stdlib `regexp` on the match path. For the minority of patterns with
+genuine capture ambiguity (or empty-width assertions the compiled path does not
+handle), it falls back to a single shared Thompson NFA core for correctness. The
+family:
 
 - **`<func>(input string) []string`** (default `FindSubmatch`) — positional
   extraction. Index 0 is the whole match, indices 1..N are the groups. A group
@@ -127,7 +136,9 @@ skipped and a one-line note is printed to stderr.
 2. **Build DFA** -- the NFA is converted to a DFA via subset construction
 3. **Generate code** -- the DFA is emitted as a Go function with a switch-based state machine
 
-For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`. Submatch extraction uses a Thompson NFA simulation with capture tracking, gated behind the DFA match for fast rejection. The simulation preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. The submatch functions are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
+For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`.
+
+Submatch extraction has two paths. **One-pass patterns are compiled**: the `<func>Index` core is the same `switch state` DFA the bool matcher emits, extended so each transition that crosses a capture boundary writes the current byte offset into a register (`caps[k] = pos`), and the accept state builds the `[]int` result straight from those registers. There is no NFA program, no thread list, no epsilon-closure, and no `sync.Pool` — a call is a single left-to-right pass with one allocation (the result), so it runs faster than stdlib's onepass interpreter. Patterns that are **not** one-pass — genuine capture ambiguity, or empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) that the compiled path does not yet resolve — fall back to a **Thompson NFA simulation** with capture tracking, gated behind the DFA match for fast rejection. That fallback preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. Both paths are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
 
 ## Benchmarks
 

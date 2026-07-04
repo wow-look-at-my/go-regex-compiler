@@ -56,7 +56,8 @@ const allTemplates = headerTemplate +
 	submatchNamesFuncTemplate +
 	submatchStructFuncTemplate +
 	nfaPackageDeclsTemplate +
-	nfaSimTemplate
+	nfaSimTemplate +
+	onepassIndexFuncTemplate
 
 // ---------- header ----------
 
@@ -67,13 +68,13 @@ const headerTemplate = `
 
 package {{ .PackageName }}
 
-{{ if .HasRanges }}
+{{ if .NeedMatch }}
 import "github.com/wow-look-at-my/go-regex-compiler/match"
 {{ end }}
-{{ if not .ASCII }}
+{{ if .NeedUTF8 }}
 import "unicode/utf8"
 {{ end }}
-{{ if .HasSubmatch }}
+{{ if .NeedSync }}
 import "sync"
 {{ end }}
 {{ end -}}

@@ -14,8 +14,12 @@ package codegen
 
 const submatchFuncTemplate = `
 {{- define "submatchFunc" -}}
+{{- if .Onepass }}
+{{ template "onepassIndexFunc" . }}
+{{- else }}
 {{ template "nfaPackageDecls" . }}
 {{ template "submatchIndexFunc" . }}
+{{- end }}
 {{ template "submatchStringFunc" . }}
 {{ template "submatchNamesFunc" . }}
 {{- if .EmitStruct }}
