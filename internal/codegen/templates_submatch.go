@@ -16,6 +16,8 @@ const submatchFuncTemplate = `
 {{- define "submatchFunc" -}}
 {{- if .Onepass }}
 {{ template "onepassIndexFunc" . }}
+{{- else if .TDFA }}
+{{ template "tdfaIndexFunc" . }}
 {{- else }}
 {{ template "nfaPackageDecls" . }}
 {{ template "submatchIndexFunc" . }}

@@ -514,13 +514,14 @@ func TestBuildSubmatchContext(t *testing.T) {
 	prog, err := syntax.Compile(re)
 	require.NoError(t, err)
 
-	ctx := buildSubmatchContext(SubmatchOptions{
+	ctx, err := buildSubmatchContext(SubmatchOptions{
 		FuncName:  "FindSubmatch",
 		MatchFunc: "Match",
 		Regex:     `([a-z]+)@([a-z]+)`,
 		Prog:      prog,
 		NumGroups: 2,
 	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "FindSubmatch", ctx.FuncName)
 	assert.Equal(t, "Match", ctx.MatchFunc)

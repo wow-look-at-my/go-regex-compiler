@@ -95,6 +95,61 @@ func parityCases() []submatchParityCase {
 			findFn: FindOpt2, indexFn: FindOpt2Index, namesFn: NamesOpt2,
 			inputs: []string{"y", "xy", "x", "yy"},
 		},
+
+		// Ambiguous-capture cases: these compile via the TDFA register machine
+		// (the one-pass path rejects them). Adjacent greedy stars, overlapping
+		// alternation, optional-then-star, nested star, and (?i) fold classes —
+		// the exact constructs that used to require the interpreter.
+		{
+			name: "amb_starstar", pattern: `(a*)(a*)`,
+			findFn: FindStarStar, indexFn: FindStarStarIndex, namesFn: NamesStarStar,
+			inputs: []string{"", "a", "aa", "aaa", "aaaa", "aaaaaa", "b", "ba"},
+		},
+		{
+			name: "amb_sss", pattern: `(a*)(a*)(a*)`,
+			findFn: FindSSS, indexFn: FindSSSIndex, namesFn: NamesSSS,
+			inputs: []string{"", "a", "aa", "aaa", "aaaaa", "b"},
+		},
+		{
+			name: "amb_altstar", pattern: `(a|ab)(a*)`,
+			findFn: FindAltStar, indexFn: FindAltStarIndex, namesFn: NamesAltStar,
+			inputs: []string{"a", "ab", "aa", "aab", "aba", "abab", "aaa", "b"},
+		},
+		{
+			name: "amb_optstar", pattern: `(a?)(a*)`,
+			findFn: FindOptStar, indexFn: FindOptStarIndex, namesFn: NamesOptStar,
+			inputs: []string{"", "a", "aa", "aaa", "b"},
+		},
+		{
+			name: "amb_neststar", pattern: `(a*)*`,
+			findFn: FindNestStar, indexFn: FindNestStarIndex, namesFn: NamesNestStar,
+			inputs: []string{"", "a", "aa", "aaa", "b"},
+		},
+		{
+			name: "amb_casei_group", pattern: `(?i)(abc)`,
+			findFn: FindCaseIG, indexFn: FindCaseIGIndex, namesFn: NamesCaseIG,
+			inputs: []string{"abc", "ABC", "AbC", "aBc", "abd", "ab", "abcd"},
+		},
+		{
+			name: "amb_casei2", pattern: `(?i)(a)(b)`,
+			findFn: FindCaseI2, indexFn: FindCaseI2Index, namesFn: NamesCaseI2,
+			inputs: []string{"ab", "AB", "aB", "Ab", "a", "b", "abc"},
+		},
+		{
+			name: "amb_casei_starstar", pattern: `(?i)(a*)(a*)`,
+			findFn: FindCaseISS, indexFn: FindCaseISSIndex, namesFn: NamesCaseISS,
+			inputs: []string{"", "a", "A", "aA", "AaA", "aaa", "b"},
+		},
+		{
+			name: "amb_digits", pattern: `(\d+)(\d*)`,
+			findFn: FindDigitsSub, indexFn: FindDigitsSubIndex, namesFn: NamesDigitsSub,
+			inputs: []string{"1", "12", "123", "1234", "a", ""},
+		},
+		{
+			name: "amb_words", pattern: `(\w+)(\w*)`,
+			findFn: FindWordsSub, indexFn: FindWordsSubIndex, namesFn: NamesWordsSub,
+			inputs: []string{"a", "ab", "abc", "a_1", "A9z", " "},
+		},
 	}
 }
 

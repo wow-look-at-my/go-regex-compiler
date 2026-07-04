@@ -106,15 +106,21 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 
 	var subCtx submatchContext
 	if opts.Submatch != nil {
-		subCtx = buildSubmatchContext(*opts.Submatch)
+		var err error
+		subCtx, err = buildSubmatchContext(*opts.Submatch)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Decide imports now that the submatch path is known. The bool matcher is
-	// always emitted; the compiled submatch path adds match.InRange/utf8 as it
-	// needs them, while only the Thompson interpreter fallback uses sync.Pool.
-	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && subCtx.Onepass && subCtx.HasRanges)
-	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && subCtx.Onepass && !subCtx.ASCII)
-	ctx.NeedSync = ctx.HasSubmatch && !subCtx.Onepass
+	// always emitted; the compiled submatch paths (one-pass and TDFA) add
+	// match.InRange/utf8 as they need them, while only the Thompson interpreter
+	// ORACLE (ForceInterpreter) uses sync.Pool.
+	compiled := subCtx.Onepass || subCtx.TDFA
+	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && compiled && subCtx.HasRanges)
+	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && compiled && !subCtx.ASCII)
+	ctx.NeedSync = ctx.HasSubmatch && !compiled
 
 	var buf bytes.Buffer
 

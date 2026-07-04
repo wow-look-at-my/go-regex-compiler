@@ -54,7 +54,8 @@ const allTemplates = headerTemplate +
 	submatchStructFuncTemplate +
 	nfaPackageDeclsTemplate +
 	nfaSimTemplate +
-	onepassIndexFuncTemplate
+	onepassIndexFuncTemplate +
+	tdfaIndexFuncTemplate
 
 // ---------- header ----------
 

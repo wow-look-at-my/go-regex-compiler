@@ -188,32 +188,58 @@ func TestDedupInts(t *testing.T) {
 	assert.Empty(t, dedupInts(nil))
 }
 
-// TestGenerateSubmatchFallback verifies an ambiguous-capture pattern — which the
-// compiled path cannot resolve — falls back to the correct Thompson interpreter,
-// emitting its program table and empty-width machinery.
-func TestGenerateSubmatchFallback(t *testing.T) {
+// TestGenerateSubmatchTDFA verifies an ambiguous-capture pattern — which the
+// one-pass path rejects — compiles to the tagged-DFA register machine, NOT an
+// interpreter: no program table, no live-position list, no sync.Pool.
+func TestGenerateSubmatchTDFA(t *testing.T) {
 	out := generateNamedSubmatch(t, `(a*)(a*)`, false)
 	assertValidGo(t, out)
 
 	assert.Contains(t, out, "func FindSubIndex(input string) []int")
-	assert.Contains(t, out, "addThread")
-	assert.Contains(t, out, "var findSubIndexProg = []findSubIndexInst{")
-	assert.Contains(t, out, "EmptyOpsAt")
-	assert.Contains(t, out, "EmptyWordBoundary")
-	assert.Contains(t, out, "sync.Pool")
+	// Register machine markers.
+	assert.Contains(t, out, "var reg [")
+	assert.Contains(t, out, "switch state {")
+	// NO interpreter machinery.
+	assert.NotContains(t, out, "addThread")
+	assert.NotContains(t, out, "findSubIndexProg")
+	assert.NotContains(t, out, "sync.Pool")
+	assert.NotContains(t, out, "EmptyOpsAt")
 }
 
-// TestBuildSubmatchContextFallback verifies the interpreter path still populates
-// the instruction table for a pattern the compiled path rejects.
-func TestBuildSubmatchContextFallback(t *testing.T) {
+// TestBuildSubmatchContextTDFA verifies a pattern the one-pass path rejects
+// compiles via the TDFA register machine (not the interpreter): TDFA is set,
+// Onepass is not, and no Thompson instruction table is built.
+func TestBuildSubmatchContextTDFA(t *testing.T) {
 	prog, n := compileProg(t, `(a*)(a*)`)
-	ctx := buildSubmatchContext(SubmatchOptions{
+	ctx, err := buildSubmatchContext(SubmatchOptions{
 		FuncName:  "FindSub",
 		MatchFunc: "Match",
 		Regex:     `(a*)(a*)`,
 		Prog:      prog,
 		NumGroups: n,
 	})
-	assert.False(t, ctx.Onepass, "ambiguous pattern must fall back")
+	require.NoError(t, err)
+	assert.False(t, ctx.Onepass, "ambiguous pattern is not one-pass")
+	assert.True(t, ctx.TDFA, "ambiguous pattern must compile via TDFA")
+	assert.Empty(t, ctx.Instructions, "compiled path must not build an instruction table")
+	assert.NotEmpty(t, ctx.TDStates, "TDFA path must have automaton states")
+}
+
+// TestBuildSubmatchContextInterpreterOracle verifies the interpreter remains
+// reachable ONLY via the explicit ForceInterpreter oracle flag (used for
+// differential testing), never on the normal generation path.
+func TestBuildSubmatchContextInterpreterOracle(t *testing.T) {
+	prog, n := compileProg(t, `(a*)(a*)`)
+	ctx, err := buildSubmatchContext(SubmatchOptions{
+		FuncName:         "FindSub",
+		MatchFunc:        "Match",
+		Regex:            `(a*)(a*)`,
+		Prog:             prog,
+		NumGroups:        n,
+		ForceInterpreter: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, ctx.Onepass)
+	assert.False(t, ctx.TDFA)
 	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 }

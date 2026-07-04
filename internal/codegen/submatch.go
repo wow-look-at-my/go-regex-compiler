@@ -27,6 +27,13 @@ type SubmatchOptions struct {
 	StructEnabled bool
 	StructType    string // type name, e.g. "Captures"
 	StructFunc    string // constructor func name, e.g. "FindCaptures"
+
+	// ForceInterpreter emits the Thompson NFA-simulation matcher instead of a
+	// compiled state machine. It exists ONLY as a development/test ORACLE (the
+	// interpreter is byte-for-byte equal to stdlib and to the compiled paths);
+	// the normal generation path never sets it, so shipped matchers are always a
+	// straight-line `switch state` machine with no interpreter.
+	ForceInterpreter bool
 }
 
 // submatchContext holds all data needed by the submatch templates.
@@ -58,6 +65,21 @@ type submatchContext struct {
 	OPNeedFirstRune bool   // decode the first rune for the start gate
 	OPNeedLastRune  bool   // decode the last rune for an accept gate
 	OPWordFunc      string // emitted word-char helper name ("" if unused)
+
+	// TDFA selects the COMPILED tagged-DFA capture matcher for patterns with
+	// genuine capture ambiguity that the one-pass path rejects (e.g. `(a*)(a*)`,
+	// `(a|ab)(a*)`, `(?i)abc`). Like the one-pass path it emits a straight-line
+	// `switch state` machine with NO interpreter; unlike it, transitions carry
+	// fixed register operations (set-to-position / copy) over an integer register
+	// file, and the accepting state reads the winning config's register block.
+	TDFA        bool
+	TDStart     int
+	TDRegCount  int      // size of the register file (maxConfigs * numSlots)
+	TDStartInit []string // register writes to initialize the start state at pos 0
+	TDStates    []tdEmitState
+	TDAccepts   []tdEmitAccept
+	TDHasAccept bool
+	TDUsesPos   bool // any transition sets a register to the current position (np)
 
 	// Priv is an unexported, per-matcher identifier prefix (the index func name
 	// with a lower-cased first rune). It uniquely names the package-level NFA
@@ -94,7 +116,7 @@ type nfaInstruction struct {
 	Runes string // empty if no runes
 }
 
-func buildSubmatchContext(opts SubmatchOptions) submatchContext {
+func buildSubmatchContext(opts SubmatchOptions) (submatchContext, error) {
 	numSlots := (opts.NumGroups + 1) * 2
 
 	if opts.NamesFuncName == "" {
@@ -121,26 +143,24 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		GroupNames:    normalizeGroupNames(opts.GroupNames, opts.NumGroups),
 	}
 
-	// Prefer the compiled one-pass matcher: if the pattern admits a single
-	// deterministic pass, emit a straight-line `switch state` automaton with
-	// inline capture writes and NO interpreter. Otherwise fall back to the
-	// Thompson NFA program below (correctness path for ambiguous captures).
-	if d, ok := buildCapDFA(opts.Prog, opts.NumGroups); ok {
-		fillOnepass(&ctx, d)
-	} else {
-		for i, inst := range opts.Prog.Inst {
-			ni := nfaInstruction{
-				Index:  i,
-				OpName: instOpName(inst.Op),
-				OpCode: instOpCode(inst.Op),
-				Out:    inst.Out,
-				Arg:    int(inst.Arg),
-			}
-			if len(inst.Rune) > 0 {
-				ni.Runes = formatRunes(inst.Rune)
-			}
-			ctx.Instructions = append(ctx.Instructions, ni)
-		}
+	// Every pattern compiles to a straight-line `switch state` machine with NO
+	// run-time interpreter. Two compiled paths, tried in order:
+	//   1. one-pass: when each input rune selects a unique next instruction, emit
+	//      inline capture writes to fixed slots (also handles edge \b/\B and text
+	//      anchors via boundary gates).
+	//   2. TDFA: for genuine capture ambiguity (adjacent stars, overlapping
+	//      alternation, (?i) fold classes), determinize into a register machine
+	//      that resolves the ambiguity at construction time.
+	// If neither applies (an interior boundary assertion the register machine
+	// does not yet compile, or DFA state explosion), we return an error rather
+	// than emit an interpreter.
+	switch {
+	case opts.ForceInterpreter:
+		fillInterpreter(&ctx, opts) // oracle only; never on the normal path
+	case tryOnepass(&ctx, opts):
+	case tryTDFA(&ctx, opts):
+	default:
+		return submatchContext{}, fmt.Errorf("cannot compile submatch for %q to a state machine without an interpreter: the pattern needs an interior empty-width assertion or exceeds the DFA state budget", opts.Regex)
 	}
 
 	// Decide whether to emit the typed struct: opt-in AND at least one named
@@ -156,7 +176,47 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		}
 	}
 
-	return ctx
+	return ctx, nil
+}
+
+// tryOnepass fills ctx with the one-pass compiled matcher if the pattern is
+// one-pass, reporting success.
+func tryOnepass(ctx *submatchContext, opts SubmatchOptions) bool {
+	d, ok := buildCapDFA(opts.Prog, opts.NumGroups)
+	if !ok {
+		return false
+	}
+	fillOnepass(ctx, d)
+	return true
+}
+
+// tryTDFA fills ctx with the compiled tagged-DFA register matcher if the pattern
+// determinizes within budget, reporting success.
+func tryTDFA(ctx *submatchContext, opts SubmatchOptions) bool {
+	d, ok := buildTDFA(opts.Prog, opts.NumGroups)
+	if !ok {
+		return false
+	}
+	fillTDFA(ctx, d)
+	return true
+}
+
+// fillInterpreter populates the Thompson NFA-simulation fields (the oracle
+// path). It is only used when SubmatchOptions.ForceInterpreter is set.
+func fillInterpreter(ctx *submatchContext, opts SubmatchOptions) {
+	for i, inst := range opts.Prog.Inst {
+		ni := nfaInstruction{
+			Index:  i,
+			OpName: instOpName(inst.Op),
+			OpCode: instOpCode(inst.Op),
+			Out:    inst.Out,
+			Arg:    int(inst.Arg),
+		}
+		if len(inst.Rune) > 0 {
+			ni.Runes = formatRunes(inst.Rune)
+		}
+		ctx.Instructions = append(ctx.Instructions, ni)
+	}
 }
 
 // normalizeGroupNames returns a slice of length numGroups+1 (index 0 == "").

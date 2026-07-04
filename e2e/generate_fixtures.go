@@ -55,6 +55,21 @@ var namedFixtures = []namedFixture{
 		"MatchRFC", "FindRFC", "NamesRFC", "RFC3339", "FindRFC3339"},
 	{"gen_named_logfmt.go", `(?P<key>\w+)="(?P<val>[^"]*)"`, "MatchLogfmt", "FindLogfmt", "NamesLogfmt", "LogfmtField", "FindLogfmtField"},
 	{"gen_named_opt2.go", `(?P<a>x)?(?P<b>y)`, "MatchOpt2", "FindOpt2", "NamesOpt2", "Opt2", "FindOpt2Struct"},
+
+	// Ambiguous-capture fixtures: the one-pass path rejects these (two live
+	// consuming instructions can match the same rune, or a (?i) fold class), so
+	// they compile via the TDFA register machine. Exercised by the parity and
+	// differential-fuzz tests. NONE emit an interpreter.
+	{"gen_amb_starstar.go", `(a*)(a*)`, "MatchStarStar", "FindStarStar", "NamesStarStar", "", ""},
+	{"gen_amb_sss.go", `(a*)(a*)(a*)`, "MatchSSS", "FindSSS", "NamesSSS", "", ""},
+	{"gen_amb_altstar.go", `(a|ab)(a*)`, "MatchAltStar", "FindAltStar", "NamesAltStar", "", ""},
+	{"gen_amb_optstar.go", `(a?)(a*)`, "MatchOptStar", "FindOptStar", "NamesOptStar", "", ""},
+	{"gen_amb_neststar.go", `(a*)*`, "MatchNestStar", "FindNestStar", "NamesNestStar", "", ""},
+	{"gen_amb_casei.go", `(?i)(abc)`, "MatchCaseIG", "FindCaseIG", "NamesCaseIG", "", ""},
+	{"gen_amb_casei2.go", `(?i)(a)(b)`, "MatchCaseI2", "FindCaseI2", "NamesCaseI2", "", ""},
+	{"gen_amb_ci_ss.go", `(?i)(a*)(a*)`, "MatchCaseISS", "FindCaseISS", "NamesCaseISS", "", ""},
+	{"gen_amb_digits.go", `(\d+)(\d*)`, "MatchDigitsSub", "FindDigitsSub", "NamesDigitsSub", "", ""},
+	{"gen_amb_words.go", `(\w+)(\w*)`, "MatchWordsSub", "FindWordsSub", "NamesWordsSub", "", ""},
 }
 
 var fixtures = []fixture{
