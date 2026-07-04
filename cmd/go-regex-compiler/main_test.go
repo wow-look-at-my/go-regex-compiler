@@ -65,6 +65,53 @@ func TestRunInvalidRegex(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestRunUnsupportedAssertions verifies that empty-width assertions the DFA
+// cannot honor are rejected with a descriptive error instead of silently
+// generating a wrong matcher (foo\bbar used to full-match "foobar").
+func TestRunUnsupportedAssertions(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"mid_word_boundary", []string{"--regex", `foo\bbar`}},
+		{"mid_dollar", []string{"--regex", `a$b`}},
+		{"dollar_in_prefix_mode", []string{"--regex", `ab$`, "--match", "prefix"}},
+		{"caret_in_contains_mode", []string{"--regex", `^abc`, "--match", "contains"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := execute(t, tc.args...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "regex", "error should explain the rejected construct")
+		})
+	}
+}
+
+// TestRunSubmatchRequiresFullMode: --submatch with prefix/contains used to
+// generate a self-contradictory pair (Match(input) true while
+// FindSubmatch(input) returned nil, since extraction is full-anchored).
+func TestRunSubmatchRequiresFullMode(t *testing.T) {
+	for _, m := range []string{"prefix", "contains"} {
+		t.Run(m, func(t *testing.T) {
+			_, err := execute(t, "--regex", "(a+)b", "--match", m, "--submatch")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--submatch requires --match full")
+		})
+	}
+}
+
+// TestRunSupportedAssertions: anchors and word boundaries that are always
+// satisfied at their position keep compiling.
+func TestRunSupportedAssertions(t *testing.T) {
+	for _, pattern := range []string{`^abc$`, `\babc`, `(\w+)\b`} {
+		t.Run(pattern, func(t *testing.T) {
+			stdout, err := execute(t, "--regex", pattern)
+			require.NoError(t, err)
+			assert.Contains(t, stdout, "func Match(input string) bool")
+		})
+	}
+}
+
 func TestRunDefaultPackage(t *testing.T) {
 	stdout, err := execute(t, "--regex", "abc")
 	require.NoError(t, err)
@@ -114,16 +161,6 @@ func TestRunWithSubmatch(t *testing.T) {
 	assert.Contains(t, stdout, "package mypkg")
 	assert.Contains(t, stdout, "func MatchEmail(input string) bool")
 	assert.Contains(t, stdout, "func FindEmailSubmatch(input string) []string")
-}
-
-func TestRunSubmatchRequiresFullMode(t *testing.T) {
-	for _, mode := range []string{"prefix", "contains"} {
-		t.Run(mode, func(t *testing.T) {
-			_, err := execute(t, "--regex", "(a)b", "--submatch", "--match", mode)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "--submatch requires --match full")
-		})
-	}
 }
 
 func TestRunSubmatchNoGroupsNote(t *testing.T) {

@@ -78,7 +78,11 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	if submatch && mode != codegen.MatchFull {
-		return fmt.Errorf("--submatch requires --match full: the generated submatch functions extract captures from a full-string match only, so combining them with --match %s would silently return nil for every partial match", matchMode)
+		// The generated submatch family extracts from a FULL-string match
+		// (parity with regexp on an anchored pattern). Combining it with
+		// prefix/contains produced a self-contradictory pair: Match(input)
+		// could be true while FindSubmatch(input) returned nil.
+		return fmt.Errorf("--submatch requires --match full: the submatch functions extract capture groups from a full-string match, which %s mode does not produce", matchMode)
 	}
 
 	// Stage 1: Parse regex into NFA (with capture group info)
@@ -90,8 +94,26 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch ignored: the regex has no capture groups")
 	}
 
-	// Stage 2: Build DFA from NFA
-	d, err := dfa.Build(result.Prog)
+	// Reject empty-width assertions the DFA cannot honor in this match mode
+	// (previously they were silently ignored, producing wrong matchers).
+	anchorStart, anchorEnd := true, true
+	switch mode {
+	case codegen.MatchPrefix:
+		anchorEnd = false
+	case codegen.MatchContains:
+		anchorStart, anchorEnd = false, false
+	}
+	if err := dfa.ValidateAssertions(result.Prog, anchorStart, anchorEnd); err != nil {
+		return err
+	}
+
+	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search
+	// DFA so the generated matcher scans the input in a single pass.
+	build := dfa.Build
+	if mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(result.Prog)
 	if err != nil {
 		return err
 	}
@@ -103,6 +125,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		Regex:       regex,
 		Mode:        mode,
 	}
+	opts.LiteralPrefix, opts.LiteralComplete = result.Prog.Prefix()
 
 	if submatch && result.NumGroups > 0 {
 		structEnabled := submatchStruct

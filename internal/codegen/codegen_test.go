@@ -17,12 +17,21 @@ import (
 
 func buildDFA(t *testing.T, pattern string) *dfa.DFA {
 	t.Helper()
+	return buildDFAForMode(t, pattern, MatchFull)
+}
+
+func buildDFAForMode(t *testing.T, pattern string, mode MatchMode) *dfa.DFA {
+	t.Helper()
 	re, err := syntax.Parse(pattern, syntax.Perl)
 	require.NoError(t, err)
 	re = re.Simplify()
 	prog, err := syntax.Compile(re)
 	require.NoError(t, err)
-	d, err := dfa.Build(prog)
+	build := dfa.Build
+	if mode == MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(prog)
 	require.NoError(t, err)
 	return d
 }
@@ -167,7 +176,17 @@ func TestGeneratePackageName(t *testing.T) {
 
 func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) string {
 	t.Helper()
-	d := buildDFA(t, pattern)
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	require.NoError(t, err)
+	re = re.Simplify()
+	prog, err := syntax.Compile(re)
+	require.NoError(t, err)
+	build := dfa.Build
+	if mode == MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(prog)
+	require.NoError(t, err)
 	var buf bytes.Buffer
 	opts := Options{
 		PackageName: "testpkg",
@@ -175,9 +194,48 @@ func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) st
 		Regex:       pattern,
 		Mode:        mode,
 	}
-	err := Generate(&buf, d, opts)
+	opts.LiteralPrefix, opts.LiteralComplete = prog.Prefix()
+	err = Generate(&buf, d, opts)
 	require.NoError(t, err)
 	return buf.String()
+}
+
+// TestGenerateContainsLiteral: a pattern that is one exact literal compiles
+// contains mode to a single strings.Contains call.
+func TestGenerateContainsLiteral(t *testing.T) {
+	out := generateWithMode(t, "error", "MatchContains", MatchContains)
+	assertValidGo(t, out)
+	assert.Contains(t, out, `return strings.Contains(input, "error")`)
+	assert.Contains(t, out, `import "strings"`)
+
+	// Unicode literals work too (strings.Contains is byte-wise).
+	uni := generateWithMode(t, "café", "MatchContains", MatchContains)
+	assertValidGo(t, uni)
+	assert.Contains(t, uni, `return strings.Contains(input, "café")`)
+
+	// Full mode stays a DFA (anchored matching is not a substring search).
+	full := generateCode(t, "error", "testpkg", "MatchFull")
+	assert.NotContains(t, full, "strings.Contains")
+}
+
+// TestGenerateContainsIndexByteSkip: a non-literal contains matcher whose
+// search DFA can only leave the start state on one byte must memchr to that
+// byte instead of stepping the DFA, and the fast path must not leak into
+// other shapes.
+func TestGenerateContainsIndexByteSkip(t *testing.T) {
+	out := generateWithMode(t, "e[0-9]+", "MatchContains", MatchContains)
+	assertValidGo(t, out)
+	assert.Contains(t, out, `strings.IndexByte(input[i:], 'e')`)
+	assert.Contains(t, out, `import "strings"`)
+
+	// Multi-byte start alphabet: no fast path.
+	multi := generateWithMode(t, `\d{3}`, "MatchContains", MatchContains)
+	assertValidGo(t, multi)
+	assert.NotContains(t, multi, "strings.IndexByte")
+
+	// Full mode is anchored; never skip.
+	full := generateCode(t, "e[0-9]+", "testpkg", "MatchFull")
+	assert.NotContains(t, full, "strings.IndexByte")
 }
 
 func assertValidGo(t *testing.T, code string) {
@@ -228,7 +286,21 @@ func TestGeneratePrefixModeUnicode(t *testing.T) {
 	output := generateWithMode(t, `[\x{00C0}-\x{00FF}]+`, "MatchPrefix", MatchPrefix)
 	assertValidGo(t, output)
 	assert.Contains(t, output, "utf8.DecodeRuneInString")
-	assert.Contains(t, output, "goto done")
+	// Prefix mode returns true as soon as an accepting state is entered.
+	assert.Contains(t, output, "return true")
+}
+
+// TestGeneratePrefixPassThroughAccept is a regression test: a prefix match
+// that passes THROUGH an accepting state (here after "a", while the DFA could
+// still consume "bc") must be reported even when a longer attempt dies later.
+// The old codegen only tested the state the DFA died in, so `a(bc)?` against
+// "abx" (and "ab") returned false despite the matching prefix "a".
+func TestGeneratePrefixPassThroughAccept(t *testing.T) {
+	output := generateWithMode(t, `a(bc)?`, "MatchPrefix", MatchPrefix)
+	assertValidGo(t, output)
+	// Entering the accept state after 'a' must immediately return true; the
+	// generated matcher must not wait for the DFA to die first.
+	assert.Contains(t, output, "case c == 'a': return true")
 }
 
 func TestGenerateContainsModeUnicode(t *testing.T) {
@@ -281,7 +353,7 @@ func TestGenerateSubmatch(t *testing.T) {
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
 			assert.Contains(t, output, "opRune")
-			assert.Contains(t, output, "nfaInst")
+			assert.Contains(t, output, "nfaProg")
 			assert.Contains(t, output, "addThread")
 			assert.Contains(t, output, "runeMatch")
 		})
@@ -491,23 +563,38 @@ func TestGenerateChainCompression(t *testing.T) {
 	assert.Less(t, lines, 200, "generated code should be compact with chain compression, got %d lines", lines)
 }
 
-func TestGenerateAssertionPatternsCompile(t *testing.T) {
-	// Empty-width assertion patterns must produce valid Go in every mode
-	// (including the degenerate shapes: no live states, no in-loop cases,
-	// unconditional latches).
+func TestGenerateAcceptedAssertionPatternsCompile(t *testing.T) {
+	// Assertion patterns flow into codegen only when dfa.ValidateAssertions
+	// accepts them for the mode (the assertion is a provable no-op there);
+	// everything it rejects never reaches Generate. For every ACCEPTED
+	// (pattern, mode) combination the emitted code must be valid Go with no
+	// unused imports; the rejections themselves are covered by the dfa
+	// package's assertion tests.
 	patterns := []string{
 		`a\bb`, `\bfoo\b`, `^a`, `a$`, `$`, `^`, `\b`, `\B`, `\A[ab]+\z`,
 		`(?m)a$`, `(?m)^b`, `a\zb`, `\b\s`, `a(?:\b)+b`, `(?m)^$`, `\bé\b`,
 	}
+	accepted := 0
 	for _, p := range patterns {
 		for _, mode := range []MatchMode{MatchFull, MatchPrefix, MatchContains} {
 			t.Run(fmt.Sprintf("%s_%d", p, mode), func(t *testing.T) {
+				re, err := syntax.Parse(p, syntax.Perl)
+				require.NoError(t, err)
+				prog, err := syntax.Compile(re.Simplify())
+				require.NoError(t, err)
+				anchorStart := mode != MatchContains
+				anchorEnd := mode == MatchFull
+				if dfa.ValidateAssertions(prog, anchorStart, anchorEnd) != nil {
+					t.Skip("rejected by ValidateAssertions (the supported behavior)")
+				}
+				accepted++
 				out := generateWithMode(t, p, "Match", mode)
 				assertValidGo(t, out)
 				assertNoUnusedImports(t, out)
 			})
 		}
 	}
+	assert.Positive(t, accepted, "expected at least some assertion placements to be accepted")
 }
 
 func TestGenerateChainReentryReset(t *testing.T) {

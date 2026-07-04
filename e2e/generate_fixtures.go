@@ -106,21 +106,34 @@ var fixtures = []fixture{
 	// Regression: a shorter alternative must stay latched when a longer
 	// non-matching continuation exists (prefix "a" of "ab" for a|abc).
 	{"gen_prefix_alt.go", "a|abc", "MatchPrefixAlt", codegen.MatchPrefix, false, ""},
+	// Regression: a prefix match that passes THROUGH an accepting state
+	// ("a" accepts, then the DFA keeps going for the optional "bc").
+	{"gen_prefix_optional.go", "a(bc)?", "MatchPrefixOptional", codegen.MatchPrefix, false, ""},
+	{"gen_prefix_astar.go", "a*", "MatchPrefixAStar", codegen.MatchPrefix, false, ""},
 
-	// Empty-width assertions (evaluated by DFA construction; audit item A).
-	{"gen_full_abb.go", `a\bb`, "MatchABoundaryB", codegen.MatchFull, false, ""},
+	// A trailing (?m)$ in full mode is a provable no-op (nothing can follow
+	// it), so it passes assertion validation and must behave like a\z.
 	{"gen_full_mline_adollar.go", `(?m)a$`, "MatchMLineADollar", codegen.MatchFull, false, ""},
-	{"gen_prefix_dollar.go", `$`, "MatchPrefixDollar", codegen.MatchPrefix, false, ""},
-	{"gen_prefix_adollar.go", `a$`, "MatchPrefixADollar", codegen.MatchPrefix, false, ""},
-	{"gen_prefix_foob.go", `foo\b`, "MatchPrefixFooB", codegen.MatchPrefix, false, ""},
-	{"gen_contains_careta.go", `^a`, "MatchContainsCaretA", codegen.MatchContains, false, ""},
-	{"gen_contains_wordb.go", `\bfoo\b`, "MatchContainsWordB", codegen.MatchContains, false, ""},
-	{"gen_contains_mlineb.go", `(?m)^b`, "MatchContainsMLineB", codegen.MatchContains, false, ""},
 
 	// Contains mode
 	{"gen_contains_charclass.go", "[a-z]+", "MatchContainsCharClass", codegen.MatchContains, false, ""},
 	{"gen_contains_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchContainsSSN", codegen.MatchContains, false, ""},
 	{"gen_contains_error.go", "error", "MatchContainsError", codegen.MatchContains, false, ""},
+	// Regression: self-overlapping literal — the search DFA must track a match
+	// attempt that starts INSIDE a failed earlier attempt ("aaab" contains "aab").
+	// (A complete literal compiles to strings.Contains; this guards that path.)
+	{"gen_contains_overlap.go", "aab", "MatchContainsOverlap", codegen.MatchContains, false, ""},
+	// Same overlap shape through the DFA scan loop (non-literal pattern).
+	{"gen_contains_overlap_class.go", "aa[bc]", "MatchContainsOverlapClass", codegen.MatchContains, false, ""},
+	// Regression: the search DFA's restart default re-enters the
+	// chain-compressed start state and must reset its chain counter (a stale
+	// count made "aaxaab" match aaa[bc]).
+	{"gen_contains_chainrestart.go", "aaa[bc]", "MatchContainsChainRestart", codegen.MatchContains, false, ""},
+	// Regression: unbounded backtracking shape that made the old
+	// restart-at-every-position loop O(n^2) on all-'a' inputs.
+	{"gen_contains_astarb.go", "a*b", "MatchContainsAStarB", codegen.MatchContains, false, ""},
+	// Unicode contains: exercises the rune-loop search DFA.
+	{"gen_contains_unicode.go", `[\x{00C0}-\x{00FF}]+`, "MatchContainsUnicode", codegen.MatchContains, false, ""},
 
 	// Submatch
 	{"gen_sub_email.go", `([a-z]+)@([a-z]+)`, "MatchSubEmail", codegen.MatchFull, true, "FindSubEmail"},
@@ -149,6 +162,9 @@ func generateNamed(f namedFixture) error {
 	result, err := parser.ParseResult(f.regex)
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
+	}
+	if err := dfa.ValidateAssertions(result.Prog, true, true); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
 	}
 	d, err := dfa.Build(result.Prog)
 	if err != nil {
@@ -195,17 +211,33 @@ func generateMatch(f fixture) error {
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
 	}
-	d, err := dfa.Build(prog)
+	anchorStart, anchorEnd := true, true
+	switch f.mode {
+	case codegen.MatchPrefix:
+		anchorEnd = false
+	case codegen.MatchContains:
+		anchorStart, anchorEnd = false, false
+	}
+	if err := dfa.ValidateAssertions(prog, anchorStart, anchorEnd); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
+	}
+	build := dfa.Build
+	if f.mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(prog)
 	if err != nil {
 		return fmt.Errorf("dfa %q: %w", f.regex, err)
 	}
 	var buf bytes.Buffer
-	err = codegen.Generate(&buf, d, codegen.Options{
+	opts := codegen.Options{
 		PackageName: "e2e",
 		FuncName:    f.funcName,
 		Regex:       f.regex,
 		Mode:        f.mode,
-	})
+	}
+	opts.LiteralPrefix, opts.LiteralComplete = prog.Prefix()
+	err = codegen.Generate(&buf, d, opts)
 	if err != nil {
 		return fmt.Errorf("codegen %q: %w", f.regex, err)
 	}
@@ -216,6 +248,9 @@ func generateSubmatch(f fixture) error {
 	result, err := parser.ParseResult(f.regex)
 	if err != nil {
 		return fmt.Errorf("parse %q: %w", f.regex, err)
+	}
+	if err := dfa.ValidateAssertions(result.Prog, true, true); err != nil {
+		return fmt.Errorf("assertions %q: %w", f.regex, err)
 	}
 	d, err := dfa.Build(result.Prog)
 	if err != nil {

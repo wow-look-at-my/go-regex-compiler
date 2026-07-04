@@ -296,19 +296,45 @@ func TestIntegrationPrefix(t *testing.T) {
 			},
 		},
 		{
-			// Regression: prefix mode must latch acceptance per step, not
-			// check only the final DFA state. The prefix "a" matches even
-			// though the walk continues into the non-accepting "ab" state.
+			// Regression: the shorter alternative must count even though the
+			// DFA keeps walking toward the longer one. The prefix "a" matches
+			// even when the walk continues into the non-accepting "ab" state.
 			name: "a|abc", matchFn: MatchPrefixAlt,
 			cases: []testCase{
 				{"a", true},
-				{"ab", true}, // prefix "a" (final state after "ab" is non-accepting)
+				{"ab", true}, // prefix "a" (the DFA dies later in a non-accepting state)
 				{"abc", true},
 				{"abcd", true},
 				{"ax", true}, // prefix "a"
 				{"b", false},
 				{"", false},
 				{"xa", false},
+			},
+		},
+		{
+			// Regression: the match passes THROUGH an accepting state ("a"
+			// accepts) before the DFA dies trying to extend to "abc". The old
+			// codegen only tested the state the DFA died in and returned false
+			// for "ab" and "abx" despite the matching prefix "a".
+			name: "a(bc)?", matchFn: MatchPrefixOptional,
+			cases: []testCase{
+				{"a", true},
+				{"ab", true},  // prefix "a" matches (bc incomplete)
+				{"abx", true}, // prefix "a" matches (bc abandoned)
+				{"abc", true},
+				{"abcx", true},
+				{"x", false},
+				{"", false},
+			},
+		},
+		{
+			// Regression: start state accepting means the empty prefix always
+			// matches, whatever the input.
+			name: "a*", matchFn: MatchPrefixAStar,
+			cases: []testCase{
+				{"", true},
+				{"aaa", true},
+				{"zzz", true}, // empty prefix matches
 			},
 		},
 	}
@@ -357,6 +383,74 @@ func TestIntegrationContains(t *testing.T) {
 				{"an error occurred", true},
 				{"ERROR", false},
 				{"", false},
+				{"errerror", true}, // match starts inside a failed attempt
+				{"erroerror", true},
+			},
+		},
+		{
+			// Regression: self-overlapping literal. A failed attempt must not
+			// swallow the start of the real match.
+			name: "aab", matchFn: MatchContainsOverlap,
+			cases: []testCase{
+				{"aab", true},
+				{"aaab", true},  // match at offset 1, overlapping the failed attempt at 0
+				{"aaaab", true}, // match at offset 2
+				{"xaabx", true},
+				{"ab", false},
+				{"aa", false},
+				{"", false},
+			},
+		},
+		{
+			// Same overlap regression through the DFA scan loop (the pattern
+			// is not a pure literal, so no strings.Contains shortcut).
+			name: "aa[bc]", matchFn: MatchContainsOverlapClass,
+			cases: []testCase{
+				{"aab", true},
+				{"aac", true},
+				{"aaab", true},  // match at offset 1, inside the failed attempt at 0
+				{"aaaac", true}, // match at offset 2
+				{"aad", false},
+				{"ab", false},
+				{"", false},
+			},
+		},
+		{
+			// Regression: the search DFA's restart default re-enters the
+			// chain-compressed start state (aaa is a compressed chain whose
+			// head IS the start state); the restart must reset the chain
+			// counter or a partial "aa" before a mismatch is counted toward
+			// the next attempt.
+			name: "aaa[bc]", matchFn: MatchContainsChainRestart,
+			cases: []testCase{
+				{"aaab", true},
+				{"aaac", true},
+				{"xxaaab", true},
+				{"aaxaaab", true},
+				{"aaxaab", false}, // stale counter made this a false positive
+				{"aab", false},
+				{"aaxab", false},
+				{"", false},
+			},
+		},
+		{
+			name: "a*b", matchFn: MatchContainsAStarB,
+			cases: []testCase{
+				{"b", true},
+				{"aaab", true},
+				{"xxaab", true},
+				{strings.Repeat("a", 5000), false}, // worst case of the old O(n^2) loop
+				{"", false},
+			},
+		},
+		{
+			name: `[\x{00C0}-\x{00FF}]+`, matchFn: MatchContainsUnicode,
+			cases: []testCase{
+				{"café", true},
+				{"naïve tea", true},
+				{"plain ascii", false},
+				{"\xff\xfe", false}, // invalid UTF-8 is not in the class
+				{"", false},
 			},
 		},
 	}
@@ -372,9 +466,11 @@ func TestIntegrationContains(t *testing.T) {
 	}
 }
 
-// TestIntegrationAssertions covers empty-width assertions (\b \B ^ $ \A \z,
-// including (?m)) across match modes; expectations mirror stdlib regexp with
-// the mode's anchoring (^(?:p)$ / ^(?:p) / p).
+// TestIntegrationAssertions covers the empty-width assertion placements that
+// dfa.ValidateAssertions ACCEPTS (provable no-ops for the mode); expectations
+// mirror stdlib regexp with the mode's anchoring. Placements the validator
+// cannot honor are rejected at generation time instead of being miscompiled
+// (see internal/dfa/assertions_test.go for the rejection coverage).
 func TestIntegrationAssertions(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -382,88 +478,14 @@ func TestIntegrationAssertions(t *testing.T) {
 		cases   []testCase
 	}{
 		{
-			// \b between two word runes can never hold.
-			name: `full a\bb`, matchFn: MatchABoundaryB,
-			cases: []testCase{
-				{"ab", false},
-				{"a b", false},
-				{"a", false},
-				{"", false},
-			},
-		},
-		{
-			// Full match: $ (?m) may accept before a newline, but full mode
-			// still has to consume the whole input.
+			// Full match: (?m)$ may accept before a newline, but full mode
+			// still has to consume the whole input, so it behaves like a\z.
 			name: `full (?m)a$`, matchFn: MatchMLineADollar,
 			cases: []testCase{
 				{"a", true},
 				{"ab", false},
 				{"a\n", false}, // the \n is left unconsumed
 				{"b", false},
-				{"", false},
-			},
-		},
-		{
-			// ^(?:$) matches only the empty prefix at end of text.
-			name: `prefix $`, matchFn: MatchPrefixDollar,
-			cases: []testCase{
-				{"", true},
-				{"a", false},
-				{"\n", false},
-			},
-		},
-		{
-			name: `prefix a$`, matchFn: MatchPrefixADollar,
-			cases: []testCase{
-				{"a", true},
-				{"ab", false},
-				{"a\n", false},
-				{"", false},
-			},
-		},
-		{
-			name: `prefix foo\b`, matchFn: MatchPrefixFooB,
-			cases: []testCase{
-				{"foo", true},
-				{"foo bar", true},
-				{"foo!", true},
-				{"foobar", false},
-				{"fo", false},
-				{"", false},
-			},
-		},
-		{
-			// ^a anchors to the start of text even in contains mode.
-			name: `contains ^a`, matchFn: MatchContainsCaretA,
-			cases: []testCase{
-				{"a", true},
-				{"abc", true},
-				{"ba", false},
-				{"\na", false},
-				{"", false},
-			},
-		},
-		{
-			name: `contains \bfoo\b`, matchFn: MatchContainsWordB,
-			cases: []testCase{
-				{"foo", true},
-				{"a foo b", true},
-				{"foo!", true},
-				{"!foo", true},
-				{"foobar", false},
-				{"xfoo", false},
-				{"barfoobaz", false},
-				{"", false},
-			},
-		},
-		{
-			name: `contains (?m)^b`, matchFn: MatchContainsMLineB,
-			cases: []testCase{
-				{"b", true},
-				{"a\nb", true},
-				{"\nb", true},
-				{"ab", false},
-				{"a b", false},
 				{"", false},
 			},
 		},

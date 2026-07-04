@@ -15,13 +15,15 @@ var funcMap = template.FuncMap{
 	"goString":             goString,
 	"isLive":               func(s templateState) bool { return len(s.Transitions) > 0 },
 	"args":                 func(args ...any) []any { return args },
+	"stateTransition":      stateTransition,
+	"quoteByte":            quoteByte,
 	"groupByteTransitions": groupByteTransitions,
 	"groupRuneTransitions": groupRuneTransitions,
-	"groupTransitions": func(kind string, s templateState) []groupedCase {
+	"groupTransitions": func(ctx templateContext, kind string, s templateState) []groupedCase {
 		if kind == "byte" {
-			return groupByteTransitions(s)
+			return groupByteTransitions(ctx, s)
 		}
-		return groupRuneTransitions(s)
+		return groupRuneTransitions(ctx, s)
 	},
 	"chainIndices": func(n int) []int {
 		indices := make([]int, n)
@@ -41,13 +43,9 @@ const allTemplates = headerTemplate +
 	containsBodyTemplate +
 	asciiLoopTemplate +
 	utf8LoopTemplate +
-	asciiLoopPrefixTemplate +
-	utf8LoopPrefixTemplate +
-	eotAcceptTemplate +
-	asciiContainsTemplate +
-	utf8ContainsTemplate +
+	asciiSearchLoopTemplate +
+	utf8SearchLoopTemplate +
 	statesTemplate +
-	statesContainsTemplate +
 	acceptCheckTemplate +
 	submatchFuncTemplate +
 	submatchIndexFuncTemplate +
@@ -68,6 +66,9 @@ package {{ .PackageName }}
 
 {{ if .NeedMatchImport }}
 import "github.com/wow-look-at-my/go-regex-compiler/match"
+{{ end }}
+{{ if or .SkipToByte .LiteralContains }}
+import "strings"
 {{ end }}
 {{ if .NeedUTF8Import }}
 import "unicode/utf8"
@@ -126,16 +127,14 @@ const fullBodyTemplate = `
 `
 
 // ---------- prefix body ----------
-
-// Prefix matching latches acceptance at every boundary instead of testing
-// only the final DFA state: a pattern such as a|abc must report the prefix
-// "a" of "ab" even though the walk ends in the non-accepting "ab" state.
-// The latch runs BEFORE consuming each rune (each state's LatchStmt tests the
-// class of the upcoming rune against the state's AcceptOn mask, which is how
-// trailing assertions like \b and $ are decided), and an end-of-text check
-// after the loop covers the final boundary. A start state that accepts in
-// every context means the empty prefix always matches, so the whole body
-// short-circuits to true.
+//
+// Prefix mode returns true the moment ANY accepting state is entered: a match
+// found mid-input proves some prefix matches, even if the DFA later dies. (The
+// old shape — run until dead and test the final state — missed matches that
+// passed THROUGH an accepting state, e.g. `a(bc)?` against "abx".) Accepting
+// states are unreachable under this scheme, so the loop only ever holds
+// non-accepting states, and running out of input or transitions means no
+// prefix matched.
 
 const prefixBodyTemplate = `
 {{- define "prefixBody" }}
@@ -147,22 +146,42 @@ const prefixBodyTemplate = `
 	chainCount{{ . }} := 0
 {{- end }}
 {{- if .ASCII -}}
-{{ template "asciiLoopPrefix" . }}
+{{ template "asciiLoop" . }}
 {{- else -}}
-{{ template "utf8LoopPrefix" . }}
+{{ template "utf8Loop" . }}
 {{- end }}
+	return false
 {{- end }}
 {{- end -}}
 `
 
 // ---------- contains body ----------
+//
+// Contains mode runs a SEARCH DFA (dfa.BuildSearch): the start closure is
+// folded into every state, so one left-to-right pass tracks every possible
+// match start simultaneously. Entering an accepting state proves a substring
+// match (EarlyAccept renders those transitions as "return true"), and a rune
+// with no transition simply restarts at the start state -- the builder omits
+// those edges and the switch default handles them. This replaces the old
+// O(n^2) restart-the-DFA-at-every-position loop with a single O(n) scan.
 
 const containsBodyTemplate = `
-{{- define "containsBody" -}}
+{{- define "containsBody" }}
+{{- if .StartAccepts }}
+	return true
+{{- else if .LiteralContains }}
+	return strings.Contains(input, {{ goString .Literal }})
+{{- else }}
+	state := {{ .Start }}
+{{- range chainIndices .NumChains }}
+	chainCount{{ . }} := 0
+{{- end }}
 {{- if .ASCII -}}
-{{ template "asciiContains" . }}
+{{ template "asciiSearchLoop" . }}
 {{- else -}}
-{{ template "utf8Contains" . }}
+{{ template "utf8SearchLoop" . }}
+{{- end }}
+	return false
 {{- end }}
 {{- end -}}
 `
@@ -172,9 +191,7 @@ const containsBodyTemplate = `
 const asciiLoopTemplate = `
 {{- define "asciiLoop" }}
 	for i := 0; i < len(input); i++ {
-{{- if .LoopHasCases }}
 		c := input[i]
-{{- end }}
 		switch state {
 {{ template "statesASCII" . }}
 		default:
@@ -187,10 +204,9 @@ const asciiLoopTemplate = `
 const utf8LoopTemplate = `
 {{- define "utf8Loop" }}
 	for i := 0; i < len(input); {
+		// Invalid UTF-8 decodes as (RuneError, 1) and is matched as U+FFFD,
+		// exactly like regexp: each bad byte is one U+FFFD rune.
 		r, size := utf8.DecodeRuneInString(input[i:])
-		if r == utf8.RuneError && size == 1 {
-			return false
-		}
 		switch state {
 {{ template "statesRune" . }}
 		default:
@@ -201,170 +217,44 @@ const utf8LoopTemplate = `
 {{- end -}}
 `
 
-const asciiLoopPrefixTemplate = `
-{{- define "asciiLoopPrefix" }}
+// ---------- contains loops ----------
+
+const asciiSearchLoopTemplate = `
+{{- define "asciiSearchLoop" }}
 	for i := 0; i < len(input); i++ {
-{{- if .LoopHasCases }}
-		c := input[i]
+{{- if .SkipToByte }}
+		if state == {{ .Start }} {
+			// The DFA can only leave the start state on {{ quoteByte .SkipByte }}: memchr to it.
+			j := strings.IndexByte(input[i:], {{ quoteByte .SkipByte }})
+			if j < 0 {
+				return false
+			}
+			i += j
+		}
 {{- end }}
+		c := input[i]
 		switch state {
-{{ template "statesASCIIPrefix" . }}
+{{ template "statesASCIISearch" . }}
 		default:
-			goto done
+			{{ .RestartBody }}
 		}
 	}
-{{- template "eotAccept" . }}
-done:
-	return false
 {{- end -}}
 `
 
-const utf8LoopPrefixTemplate = `
-{{- define "utf8LoopPrefix" }}
+const utf8SearchLoopTemplate = `
+{{- define "utf8SearchLoop" }}
 	for i := 0; i < len(input); {
+		// Invalid UTF-8 decodes as (RuneError, 1) and is matched as U+FFFD,
+		// exactly like regexp: each bad byte is one U+FFFD rune.
 		r, size := utf8.DecodeRuneInString(input[i:])
-		if r == utf8.RuneError && size == 1 {
-{{- if gt (len .OtherLatchIDs) 0 }}
-			switch state {
-			case {{ range $i, $id := .OtherLatchIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-				return true
-			default:
-			}
-{{- end }}
-			goto done
-		}
 		switch state {
-{{ template "statesRunePrefix" . }}
+{{ template "statesRuneSearch" . }}
 		default:
-			goto done
+			{{ .RestartBody }}
 		}
 		i += size
 	}
-{{- template "eotAccept" . }}
-done:
-	return false
-{{- end -}}
-`
-
-// eotAccept returns true when the walk consumed the whole input and the final
-// state accepts at end of text.
-const eotAcceptTemplate = `
-{{- define "eotAccept" }}
-{{- if gt (len .AcceptIDs) 0 }}
-	switch state {
-	case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-		return true
-	default:
-	}
-{{- end }}
-{{- end -}}
-`
-
-// ---------- contains loops ----------
-
-// The contains loops latch acceptance BEFORE consuming each rune (each
-// state's LatchStmt tests the upcoming rune's class against the state's
-// AcceptOn mask) and check end-of-text acceptance after an inner walk that
-// consumed the rest of the input. The seed statements pick the start state
-// for the boundary context preceding the start position (relevant only when
-// the pattern carries assertions).
-
-const asciiContainsTemplate = `
-{{- define "asciiContains" }}
-{{- if .StartAccepts }}
-	return true
-{{- else }}
-	for start := 0; start <= len(input); start++ {
-{{- if .HasAssertions }}
-		if start < len(input) && input[start]&0xC0 == 0x80 {
-			continue // do not start inside a multi-byte rune
-		}
-{{- end }}
-{{ .ContainsSeed }}
-{{- range chainIndices .NumChains }}
-		chainCount{{ . }} := 0
-{{- end }}
-		dead := false
-		for i := start; i < len(input); i++ {
-{{- if .LoopHasCases }}
-			c := input[i]
-{{- end }}
-			switch state {
-{{ template "statesASCIIContains" . }}
-			default:
-				dead = true
-			}
-			if dead {
-				break
-			}
-		}
-{{- if gt (len .AcceptIDs) 0 }}
-		if !dead {
-			switch state {
-			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-				return true
-			default:
-			}
-		}
-{{- end }}
-	}
-	return false
-{{- end }}
-{{- end -}}
-`
-
-const utf8ContainsTemplate = `
-{{- define "utf8Contains" }}
-{{- if .StartAccepts }}
-	return true
-{{- else }}
-	for start := 0; start <= len(input); {
-{{ .ContainsSeed }}
-{{- range chainIndices .NumChains }}
-		chainCount{{ . }} := 0
-{{- end }}
-		dead := false
-		for i := start; i < len(input); {
-			r, size := utf8.DecodeRuneInString(input[i:])
-			if r == utf8.RuneError && size == 1 {
-{{- if gt (len .OtherLatchIDs) 0 }}
-				switch state {
-				case {{ range $i, $id := .OtherLatchIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-					return true
-				default:
-				}
-{{- end }}
-				dead = true
-				break
-			}
-			switch state {
-{{ template "statesRuneContains" . }}
-			default:
-				dead = true
-			}
-			if dead {
-				break
-			}
-			i += size
-		}
-{{- if gt (len .AcceptIDs) 0 }}
-		if !dead {
-			switch state {
-			case {{ range $i, $id := .AcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
-				return true
-			default:
-			}
-		}
-{{- end }}
-		if start < len(input) {
-			_, size := utf8.DecodeRuneInString(input[start:])
-			start += size
-		} else {
-			start++
-		}
-	}
-	return false
-{{- end }}
 {{- end -}}
 `
 
@@ -374,63 +264,22 @@ const utf8ContainsTemplate = `
 // Byte vs rune condition and the no-match action are passed as parameters.
 
 const statesTemplate = `
-{{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false" false) }}{{ end }}
-{{- define "statesASCIIPrefix" }}{{ template "statesInner" (args . "byte" "goto done" true) }}{{ end }}
-{{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false" false) }}{{ end }}
-{{- define "statesRunePrefix" }}{{ template "statesInner" (args . "rune" "goto done" true) }}{{ end }}
+{{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
+{{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
+{{- define "statesASCIISearch" }}{{ template "statesInner" (args . "byte" .RestartBody) }}{{ end }}
+{{- define "statesRuneSearch" }}{{ template "statesInner" (args . "rune" .RestartBody) }}{{ end }}
 {{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}
 {{- $noMatch := index . 2 -}}
-{{- $latch := index . 3 -}}
-{{- range $ctx.States }}{{ $doLatch := and $latch (ne .LatchStmt "") }}{{ if or (isLive .) $doLatch }}
+{{- range $ctx.States }}{{ if isLive . }}
 		case {{ .ID }}:
-{{- if and $doLatch (eq .LatchStmt "return true") }}
-			return true
-{{- else }}
-{{- if $doLatch }}
-			{{ .LatchStmt }}
-{{- end }}
-{{- if isLive . }}
 			switch {
-{{- range groupTransitions $condKind . }}
+{{- range groupTransitions $ctx $condKind . }}
 			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ $noMatch }}
 			}
-{{- else }}
-			{{ $noMatch }}
-{{- end }}
-{{- end }}
-{{- end }}{{ end }}
-{{- end -}}
-`
-
-const statesContainsTemplate = `
-{{- define "statesASCIIContains" }}{{ template "statesContainsInner" (args . "byte") }}{{ end }}
-{{- define "statesRuneContains" }}{{ template "statesContainsInner" (args . "rune") }}{{ end }}
-{{- define "statesContainsInner" -}}
-{{- $ctx := index . 0 -}}
-{{- $condKind := index . 1 -}}
-{{- range $ctx.States }}{{ if or (isLive .) (ne .LatchStmt "") }}
-			case {{ .ID }}:
-{{- if eq .LatchStmt "return true" }}
-				return true
-{{- else }}
-{{- if ne .LatchStmt "" }}
-				{{ .LatchStmt }}
-{{- end }}
-{{- if isLive . }}
-				switch {
-{{- range groupTransitions $condKind . }}
-				case {{ .Cond }}: {{ .Body }}
-{{- end }}
-				default: dead = true
-				}
-{{- else }}
-				dead = true
-{{- end }}
-{{- end }}
 {{- end }}{{ end }}
 {{- end -}}
 `
@@ -475,7 +324,46 @@ const submatchFuncTemplate = `
 
 const nfaTableTemplate = `
 {{- define "nfaTable" -}}
-	// NFA instruction types
+// nfaProg{{ .IndexFuncName }} is the NFA instruction table for the regex
+// {{ quoteRegex .Regex }}, built once at package initialization. Ops:
+// 0=rune 1=rune1 2=runeAny 3=runeAnyNotNL 4=alt 5=capture 6=match 7=nop
+// 8=fail 9=emptyWidth.
+var nfaProg{{ .IndexFuncName }} = []struct {
+	op    int
+	out   int
+	arg   int
+	runes []rune
+}{
+{{- range .Instructions }}
+	/* {{ .Index }} {{ .OpName }} */ {op: {{ .OpNum }}, out: {{ .Out }}, arg: {{ .Arg }}{{ if .Runes }}, runes: {{ .Runes }}{{ end }}},
+{{- end }}
+}
+{{ end -}}
+`
+
+const submatchIndexFuncTemplate = `
+{{- define "submatchIndexFunc" -}}
+{{ template "nfaTable" . }}
+// {{ .IndexFuncName }} returns the submatch index slice for the regex {{ quoteRegex .Regex }},
+// or nil if the input does not match. The slice has length 2*(N+1) where N is
+// the number of capture groups: pair (2*g, 2*g+1) holds the absolute byte
+// offsets [start, end) of group g, with index 0 being the whole match. A
+// non-participating group has the pair (-1, -1). This is parity with
+// regexp.Regexp.FindStringSubmatchIndex.
+func {{ .IndexFuncName }}(input string) []int {
+	if !{{ .MatchFunc }}(input) {
+		return nil
+	}
+	prog := nfaProg{{ .IndexFuncName }}
+	startPC := {{ .StartPC }}
+{{ template "nfaSim" . }}
+}
+{{ end -}}
+`
+
+const nfaSimTemplate = `
+{{- define "nfaSim" -}}
+	// NFA instruction types (indices into nfaProg op fields).
 	const (
 		opRune      = 0
 		opRune1     = 1
@@ -500,42 +388,6 @@ const nfaTableTemplate = `
 		emptyNoWordBoundary = 32
 	)
 
-	type nfaInst struct {
-		op   int
-		out  int
-		arg  int
-		runes []rune
-	}
-
-	prog := []nfaInst{
-{{- range .Instructions }}
-		/* {{ .Index }} */ {op: {{ .OpName }}, out: {{ .Out }}, arg: {{ .Arg }}{{ if .Runes }}, runes: {{ .Runes }}{{ end }}},
-{{- end }}
-	}
-	startPC := {{ .StartPC }}
-{{ end -}}
-`
-
-const submatchIndexFuncTemplate = `
-{{- define "submatchIndexFunc" -}}
-// {{ .IndexFuncName }} returns the submatch index slice for the regex {{ quoteRegex .Regex }},
-// or nil if the input does not match. The slice has length 2*(N+1) where N is
-// the number of capture groups: pair (2*g, 2*g+1) holds the absolute byte
-// offsets [start, end) of group g, with index 0 being the whole match. A
-// non-participating group has the pair (-1, -1). This is parity with
-// regexp.Regexp.FindStringSubmatchIndex.
-func {{ .IndexFuncName }}(input string) []int {
-	if !{{ .MatchFunc }}(input) {
-		return nil
-	}
-{{ template "nfaTable" . }}
-{{ template "nfaSim" . }}
-}
-{{ end -}}
-`
-
-const nfaSimTemplate = `
-{{- define "nfaSim" -}}
 	// isWordChar reports whether r is a word character ([0-9A-Za-z_]).
 	isWordChar := func(r rune) bool {
 		return r == '_' ||
@@ -575,50 +427,58 @@ const nfaSimTemplate = `
 	// preserved (leftmost-first, matching Go's default regexp engine): the
 	// stack-based closure explores the high-priority branch (out) before the
 	// low-priority branch (arg) of each alternation.
+	//
+	// All scratch state (visited marks, closure stack, thread lists) lives in
+	// this frame and is reused across positions: the simulation performs a
+	// bounded number of allocations regardless of input length. visited is
+	// generation-stamped and shared by every addThread call within one step,
+	// so each pc runs at most once per position (the first, highest-priority
+	// thread to claim it wins, as in regexp).
 	type thread struct {
 		pc   int
 		caps [{{ .NumSlots }}]int
 	}
+	type frame struct {
+		pc   int
+		caps [{{ .NumSlots }}]int
+	}
+	visited := make([]int, len(prog))
+	gen := 0
+	var stack []frame
 
 	addThread := func(list []thread, pc int, caps [{{ .NumSlots }}]int, pos int, before, after rune) []thread {
-		visited := make(map[int]bool)
-		type frame struct {
-			pc   int
-			caps [{{ .NumSlots }}]int
-		}
-		var stack []frame
-		stack = append(stack, frame{pc: pc, caps: caps})
+		stack = append(stack[:0], frame{pc: pc, caps: caps})
 		// emptyOps for this position, computed lazily on the first opEmpty.
 		ops := -1
 		for len(stack) > 0 {
 			f := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			if f.pc < 0 || f.pc >= len(prog) || visited[f.pc] {
+			if f.pc < 0 || f.pc >= len(prog) || visited[f.pc] == gen {
 				continue
 			}
-			visited[f.pc] = true
+			visited[f.pc] = gen
 			inst := &prog[f.pc]
 			switch inst.op {
 			case opAlt:
 				// Push low priority first so high priority (out) is processed first.
 				stack = append(stack, frame{pc: inst.arg, caps: f.caps})
-				stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+				stack = append(stack, frame{pc: inst.out, caps: f.caps})
 			case opNop:
-				stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+				stack = append(stack, frame{pc: inst.out, caps: f.caps})
 			case opEmpty:
 				if ops < 0 {
 					ops = emptyOpsAt(before, after)
 				}
 				// The assertion holds iff every required bit is satisfied.
 				if inst.arg&^ops == 0 {
-					stack = append(stack, frame{pc: int(inst.out), caps: f.caps})
+					stack = append(stack, frame{pc: inst.out, caps: f.caps})
 				}
 			case opCapture:
 				newCaps := f.caps
 				if inst.arg < {{ .NumSlots }} {
 					newCaps[inst.arg] = pos
 				}
-				stack = append(stack, frame{pc: int(inst.out), caps: newCaps})
+				stack = append(stack, frame{pc: inst.out, caps: newCaps})
 			default:
 				list = append(list, thread{pc: f.pc, caps: f.caps})
 			}
@@ -626,27 +486,22 @@ const nfaSimTemplate = `
 		return list
 	}
 
-	runeMatch := func(inst *nfaInst, r rune) bool {
-		switch inst.op {
+	runeMatch := func(op int, runes []rune, r rune) bool {
+		switch op {
 		case opRuneAny:
 			return true
 		case opRuneAnyNL:
 			return r != '\n'
 		case opRune1:
-			if len(inst.runes) > 0 && inst.runes[0] == r {
-				return true
-			}
-			return false
+			return len(runes) > 0 && runes[0] == r
 		case opRune:
-			for i := 0; i < len(inst.runes)-1; i += 2 {
-				if r >= inst.runes[i] && r <= inst.runes[i+1] {
+			for i := 0; i < len(runes)-1; i += 2 {
+				if r >= runes[i] && r <= runes[i+1] {
 					return true
 				}
 			}
-			if len(inst.runes)%2 == 1 {
-				if r == inst.runes[len(inst.runes)-1] {
-					return true
-				}
+			if len(runes)%2 == 1 && r == runes[len(runes)-1] {
+				return true
 			}
 			return false
 		}
@@ -676,8 +531,10 @@ const nfaSimTemplate = `
 	if len(runes) > 0 {
 		firstRune = runes[0]
 	}
+	gen++
 	current := addThread(nil, startPC, initCaps, 0, -1, firstRune)
 
+	var next []thread
 	for k := 0; k < len(runes); k++ {
 		r := runes[k]
 		nextPos := offs[k+1]
@@ -686,14 +543,15 @@ const nfaSimTemplate = `
 		if k+1 < len(runes) {
 			afterRune = runes[k+1]
 		}
-		var next []thread
+		gen++
+		next = next[:0]
 		for _, t := range current {
 			inst := &prog[t.pc]
-			if runeMatch(inst, r) {
-				next = addThread(next, int(inst.out), t.caps, nextPos, r, afterRune)
+			if runeMatch(inst.op, inst.runes, r) {
+				next = addThread(next, inst.out, t.caps, nextPos, r, afterRune)
 			}
 		}
-		current = next
+		current, next = next, current
 	}
 
 	for _, t := range current {

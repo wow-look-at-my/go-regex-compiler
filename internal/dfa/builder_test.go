@@ -122,77 +122,6 @@ func TestBuildCaseInsensitive(t *testing.T) {
 	assert.Equal(t, 1, countAccepting(d), "exactly one accepting state")
 }
 
-func TestPendingClosure(t *testing.T) {
-	prog := parse(t, "a")
-	b := &builder{
-		prog:     prog,
-		stateMap: make(map[stateKey]int),
-	}
-
-	closure := b.pendingClosure([]int{prog.Start})
-	assert.NotEmpty(t, closure, "pending closure of start state should not be empty")
-	assert.Contains(t, closure, prog.Start, "pending closure should contain start state")
-}
-
-func TestBuildWordBoundaryNeverSatisfiedInsideWord(t *testing.T) {
-	// a\bb has no satisfiable path: both neighbours of \b are word runes.
-	d, err := Build(parse(t, `a\bb`))
-	require.NoError(t, err)
-	assert.True(t, d.HasAssertions)
-	assert.False(t, hasAcceptingState(d), `a\bb must have no accepting state`)
-}
-
-func TestBuildDollarAcceptMasks(t *testing.T) {
-	nonNeverMask := func(d *DFA) AcceptMask {
-		for _, s := range d.States {
-			if s.AcceptOn != AcceptNever {
-				return s.AcceptOn
-			}
-		}
-		return AcceptNever
-	}
-
-	d, err := Build(parse(t, `a$`))
-	require.NoError(t, err)
-	assert.Equal(t, AcceptOnEOT, nonNeverMask(d), "$ accepts only at end of text")
-
-	d, err = Build(parse(t, `(?m)a$`))
-	require.NoError(t, err)
-	assert.Equal(t, AcceptOnEOT|AcceptOnNL, nonNeverMask(d),
-		"(?m)$ accepts at end of text or before a newline")
-}
-
-func TestBuildStartForContexts(t *testing.T) {
-	// \bfoo can only begin matching where a word boundary holds, so the start
-	// state after a word rune must differ from the begin-of-text one.
-	d, err := Build(parse(t, `\bfoo`))
-	require.NoError(t, err)
-	assert.NotEmpty(t, d.States[d.StartFor[ClassBegin]].Transitions,
-		"begin-of-text start must be able to consume 'f'")
-	assert.Empty(t, d.States[d.StartFor[ClassWord]].Transitions,
-		"after a word rune there is no boundary before 'f'")
-	assert.Equal(t, d.Start, d.StartFor[ClassBegin])
-
-	// Assertion-free patterns share one start state across all contexts.
-	d2, err := Build(parse(t, `foo`))
-	require.NoError(t, err)
-	assert.False(t, d2.HasAssertions)
-	for _, id := range d2.StartFor {
-		assert.Equal(t, d2.Start, id)
-	}
-}
-
-func TestBuildMidPatternAnchorNeverMatches(t *testing.T) {
-	// a$b and a^b can never match without (?m).
-	for _, p := range []string{`a$b`, `a^b`, `a\Ab`, `a\zb`} {
-		t.Run(p, func(t *testing.T) {
-			d, err := Build(parse(t, p))
-			require.NoError(t, err)
-			assert.False(t, hasAcceptingState(d), "%s must have no accepting state", p)
-		})
-	}
-}
-
 func TestExpandFoldCaseNoCap(t *testing.T) {
 	// U+212A (KELVIN SIGN) sits at offset 0x12A (> 256) from U+2000; its fold
 	// orbit {k, K} must not be dropped by any per-range expansion cap.
@@ -232,5 +161,77 @@ func TestMergeRuneRanges(t *testing.T) {
 			result := mergeRuneRanges(tt.input)
 			assert.Equal(t, tt.expect, result)
 		})
+	}
+}
+
+// simulateSearch runs a search DFA (BuildSearch) over input the way the
+// generated contains-mode code does: transition on each rune, restart at the
+// start state when no transition matches, and report true as soon as an
+// accepting state is entered.
+func simulateSearch(d *DFA, input string) bool {
+	if d.States[d.Start].Accept {
+		return true
+	}
+	state := d.Start
+	for _, r := range input {
+		next := d.Start
+		for _, tr := range d.States[state].Transitions {
+			if tr.Lo <= r && r <= tr.Hi {
+				next = tr.Next
+				break
+			}
+		}
+		if d.States[next].Accept {
+			return true
+		}
+		state = next
+	}
+	return false
+}
+
+func TestBuildSearchSeedsStartEverywhere(t *testing.T) {
+	prog := parse(t, "aab")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	// The classic overlap case: the match at offset 1 starts inside the
+	// failed attempt at offset 0. A restart-on-failure scanner misses it;
+	// the search DFA must not.
+	assert.True(t, simulateSearch(d, "aaab"))
+	assert.True(t, simulateSearch(d, "aab"))
+	assert.True(t, simulateSearch(d, "xxaabyy"))
+	assert.False(t, simulateSearch(d, "aa"))
+	assert.False(t, simulateSearch(d, "ab"))
+	assert.False(t, simulateSearch(d, ""))
+}
+
+func TestBuildSearchUnanchoredScan(t *testing.T) {
+	prog := parse(t, "a*b")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	assert.True(t, simulateSearch(d, "b"))
+	assert.True(t, simulateSearch(d, "zzzaaabzzz"))
+	assert.False(t, simulateSearch(d, "aaaa"))
+	assert.False(t, simulateSearch(d, "zzz"))
+}
+
+func TestBuildSearchEmptyPattern(t *testing.T) {
+	prog := parse(t, "")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+	assert.True(t, d.States[d.Start].Accept, "empty pattern matches everywhere")
+}
+
+func TestBuildSearchOmitsRestartTransitions(t *testing.T) {
+	prog := parse(t, "abc")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	for _, s := range d.States {
+		for _, tr := range s.Transitions {
+			assert.NotEqual(t, d.Start, tr.Next,
+				"transitions back to the start state must be omitted (state %d)", s.ID)
+		}
 	}
 }
