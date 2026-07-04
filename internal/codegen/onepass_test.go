@@ -38,6 +38,9 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 		{`([a-z]+)(\.[a-z]+)*`, true},
 		{`(?P<a>x)?(?P<b>y)`, true},
 		{`(a|ab)(c)`, true},       // disjoint after first token: 'b' vs 'c'
+		{`(\babc)`, true},         // leading \b: resolved as a start gate
+		{`(\w+)\b`, true},         // trailing \b: resolved as an accept gate
+		{`^(\d+)-(\d+)$`, true},   // ^ and $ text anchors fold away for full match
 		{`([^"]*)"(\d+)"`, false}, // negated class -> non-ASCII -> rune path
 	}
 	for i, tt := range patterns {
@@ -65,9 +68,8 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 // caller uses the Thompson interpreter.
 func TestBuildCapDFAFallback(t *testing.T) {
 	patterns := []string{
-		`(\babc)`,   // empty-width assertion (\b) at start
-		`(\w+)\b`,   // empty-width assertion (\b) at end
 		`(a*)(a*)`,  // ambiguous captures: both groups match 'a'
+		`(a)\b(.)`,  // interior \b between two consuming instructions
 		`(?i)(abc)`, // fold-case class (unsupported in compiled path)
 	}
 	for i, p := range patterns {
@@ -148,17 +150,49 @@ func TestOnepassEmitHelpers(t *testing.T) {
 	assert.Equal(t, "", onepassAcceptBody([]int{0, 1}))
 }
 
+// TestGenerateOnepassGates verifies the compiled path handles empty-width
+// boundary assertions: a leading \b becomes a start gate, a trailing \b an
+// accept gate (both emitting a word-char helper), and ^/$ text anchors fold away
+// entirely for full-match. All stay COMPILED (no interpreter).
+func TestGenerateOnepassGates(t *testing.T) {
+	t.Run("leading_wordboundary", func(t *testing.T) {
+		out := generateNamedSubmatch(t, `(\babc)`, false)
+		assertValidGo(t, out)
+		assert.NotContains(t, out, "addThread")
+		assert.Contains(t, out, "func findSubIndexWord(r rune) bool")
+		assert.Contains(t, out, "firstRune")
+		assert.Contains(t, out, "!findSubIndexWord(firstRune)")
+	})
+	t.Run("trailing_wordboundary", func(t *testing.T) {
+		out := generateNamedSubmatch(t, `(\w+)\b`, false)
+		assertValidGo(t, out)
+		assert.NotContains(t, out, "addThread")
+		assert.Contains(t, out, "lastRune")
+		assert.Contains(t, out, "!findSubIndexWord(lastRune)")
+	})
+	t.Run("text_anchors_fold", func(t *testing.T) {
+		// ^ and $ are always satisfied at the ends of a full match, so no gate
+		// code (no word helper, no firstRune/lastRune) is emitted.
+		out := generateNamedSubmatch(t, `^(\d+)-(\d+)$`, false)
+		assertValidGo(t, out)
+		assert.NotContains(t, out, "addThread")
+		assert.Contains(t, out, "switch state {")
+		assert.NotContains(t, out, "Word(")
+		assert.NotContains(t, out, "firstRune")
+	})
+}
+
 func TestDedupInts(t *testing.T) {
 	assert.Equal(t, []int{1, 2, 3}, dedupInts([]int{1, 2, 2, 3, 3}))
 	assert.Equal(t, []int{1}, dedupInts([]int{1}))
 	assert.Empty(t, dedupInts(nil))
 }
 
-// TestGenerateSubmatchFallback verifies a pattern with an empty-width assertion
-// (\b) — which the compiled path does not handle — falls back to the correct
-// Thompson interpreter, emitting its program table and empty-width machinery.
+// TestGenerateSubmatchFallback verifies an ambiguous-capture pattern — which the
+// compiled path cannot resolve — falls back to the correct Thompson interpreter,
+// emitting its program table and empty-width machinery.
 func TestGenerateSubmatchFallback(t *testing.T) {
-	out := generateNamedSubmatch(t, `(\w+)\b`, false)
+	out := generateNamedSubmatch(t, `(a*)(a*)`, false)
 	assertValidGo(t, out)
 
 	assert.Contains(t, out, "func FindSubIndex(input string) []int")
@@ -170,16 +204,16 @@ func TestGenerateSubmatchFallback(t *testing.T) {
 }
 
 // TestBuildSubmatchContextFallback verifies the interpreter path still populates
-// the instruction table for a pattern the compiled path rejects (empty-width).
+// the instruction table for a pattern the compiled path rejects.
 func TestBuildSubmatchContextFallback(t *testing.T) {
-	prog, n := compileProg(t, `(\w+)\b`)
+	prog, n := compileProg(t, `(a*)(a*)`)
 	ctx := buildSubmatchContext(SubmatchOptions{
 		FuncName:  "FindSub",
 		MatchFunc: "Match",
-		Regex:     `(\w+)\b`,
+		Regex:     `(a*)(a*)`,
 		Prog:      prog,
 		NumGroups: n,
 	})
-	assert.False(t, ctx.Onepass, "empty-width pattern must fall back")
+	assert.False(t, ctx.Onepass, "ambiguous pattern must fall back")
 	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 }

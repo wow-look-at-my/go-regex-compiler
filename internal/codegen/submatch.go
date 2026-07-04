@@ -52,6 +52,13 @@ type submatchContext struct {
 	ASCII       bool // compiled path: byte fast-path vs. rune decoding
 	HasRanges   bool // compiled path: any match.InRange call emitted
 
+	// Empty-width (\b/\B) boundary gates for the compiled path. Text anchors
+	// (^ $ \A \z) are folded away as always-satisfied at the input ends.
+	OPStartWord     int    // 0 none, 1 first rune must be a word char, 2 must not
+	OPNeedFirstRune bool   // decode the first rune for the start gate
+	OPNeedLastRune  bool   // decode the last rune for an accept gate
+	OPWordFunc      string // emitted word-char helper name ("" if unused)
+
 	// Priv is an unexported, per-matcher identifier prefix (the index func name
 	// with a lower-cased first rune). It uniquely names the package-level NFA
 	// program, instruction/thread/frame types, and scratch pool that the hot

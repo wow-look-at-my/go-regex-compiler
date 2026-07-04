@@ -70,10 +70,11 @@ rune always determines the next step unambiguously): capture-group byte offsets
 are written inline (`caps[k] = pos`) on the transitions that cross a group
 boundary, with **no** instruction table, thread list, or epsilon-closure at run
 time — the automaton *is* the Go control flow, allocating only the result slice
-and beating stdlib `regexp` on the match path. For the minority of patterns with
-genuine capture ambiguity (or empty-width assertions the compiled path does not
-handle), it falls back to a single shared Thompson NFA core for correctness. The
-family:
+and beating stdlib `regexp` on the match path. Text anchors (`^ $ \A \z`) and
+word boundaries (`\b \B`) at the start/end of the match compile too, as cheap
+boundary gates. For the minority of patterns with genuine capture ambiguity (or
+an *interior* empty-width assertion between two consumed characters), it falls
+back to a single shared Thompson NFA core for correctness. The family:
 
 - **`<func>(input string) []string`** (default `FindSubmatch`) — positional
   extraction. Index 0 is the whole match, indices 1..N are the groups. A group
@@ -138,7 +139,7 @@ skipped and a one-line note is printed to stderr.
 
 For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`.
 
-Submatch extraction has two paths. **One-pass patterns are compiled**: the `<func>Index` core is the same `switch state` DFA the bool matcher emits, extended so each transition that crosses a capture boundary writes the current byte offset into a register (`caps[k] = pos`), and the accept state builds the `[]int` result straight from those registers. There is no NFA program, no thread list, no epsilon-closure, and no `sync.Pool` — a call is a single left-to-right pass with one allocation (the result), so it runs faster than stdlib's onepass interpreter. Patterns that are **not** one-pass — genuine capture ambiguity, or empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) that the compiled path does not yet resolve — fall back to a **Thompson NFA simulation** with capture tracking, gated behind the DFA match for fast rejection. That fallback preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. Both paths are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
+Submatch extraction has two paths. **One-pass patterns are compiled**: the `<func>Index` core is the same `switch state` DFA the bool matcher emits, extended so each transition that crosses a capture boundary writes the current byte offset into a register (`caps[k] = pos`), and the accept state builds the `[]int` result straight from those registers. There is no NFA program, no thread list, no epsilon-closure, and no `sync.Pool` — a call is a single left-to-right pass with one allocation (the result), so it runs faster than stdlib's onepass interpreter. Empty-width assertions at the match boundaries are handled inline: text anchors (`^`, `$`, `\A`, `\z`) fold away as always-satisfied for a full match, and a leading/trailing word boundary (`\b`, `\B`) becomes a one-line gate on the first/last rune. Patterns that are **not** one-pass — genuine capture ambiguity, or an *interior* empty-width assertion between two consumed characters — fall back to a **Thompson NFA simulation** with capture tracking, gated behind the DFA match for fast rejection. That fallback preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. Both paths are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
 
 ## Benchmarks
 

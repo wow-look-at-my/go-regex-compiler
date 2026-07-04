@@ -25,10 +25,11 @@ type onepassEmitCase struct {
 }
 
 // onepassAccept groups accepting states that share the same end-of-input capture
-// writes, so they can collapse into a single `case a, b:` clause.
+// writes and word-boundary requirement, so they collapse into one `case a, b:`.
 type onepassAccept struct {
 	IDs  string // "3, 5"
 	Body string // "caps[5] = len(input)", possibly empty
+	Word int    // 0 none, 1 last rune must be a word char (\b), 2 must not (\B)
 }
 
 // fillOnepass populates the compiled-path fields of ctx from d.
@@ -57,29 +58,64 @@ func fillOnepass(ctx *submatchContext, d *capDFA) {
 	}
 	ctx.HasRanges = hasRanges
 
-	// Group accepting states by their end-of-input write body.
-	byBody := make(map[string][]int)
-	var order []string
+	// Start gate: a word-boundary assertion (\b/\B) required at position 0. Text
+	// anchors (^ \A) are always satisfied there and were masked off in buildCapDFA.
+	ctx.OPStartWord = wordReq(d.startGate)
+	needFirst := ctx.OPStartWord != 0
+
+	// Group accepting states by their end-of-input write body AND word-boundary
+	// requirement (\b/\B at the end, e.g. `(\w+)\b`); text anchors ($ \z) are
+	// always satisfied at end-of-input.
+	type acceptKey struct {
+		body string
+		word int
+	}
+	byKey := make(map[acceptKey][]int)
+	var order []acceptKey
+	needLast := false
 	for _, st := range d.states {
 		if !st.accept {
 			continue
 		}
-		body := onepassAcceptBody(st.acceptWrites)
-		if _, ok := byBody[body]; !ok {
-			order = append(order, body)
+		k := acceptKey{body: onepassAcceptBody(st.acceptWrites), word: wordReq(st.acceptGate)}
+		if _, ok := byKey[k]; !ok {
+			order = append(order, k)
 		}
-		byBody[body] = append(byBody[body], st.id)
+		byKey[k] = append(byKey[k], st.id)
+		if k.word != 0 {
+			needLast = true
+		}
 	}
-	for _, body := range order {
-		ids := byBody[body]
+	for _, k := range order {
+		ids := byKey[k]
 		sort.Ints(ids)
 		strIDs := make([]string, len(ids))
 		for i, id := range ids {
 			strIDs[i] = strconv.Itoa(id)
 		}
-		ctx.OPAccepts = append(ctx.OPAccepts, onepassAccept{IDs: strings.Join(strIDs, ", "), Body: body})
+		ctx.OPAccepts = append(ctx.OPAccepts, onepassAccept{IDs: strings.Join(strIDs, ", "), Body: k.body, Word: k.word})
 	}
 	ctx.OPHasAccept = len(ctx.OPAccepts) > 0
+	ctx.OPNeedFirstRune = needFirst
+	ctx.OPNeedLastRune = needLast
+	if needFirst || needLast {
+		ctx.OPWordFunc = ctx.Priv + "Word"
+	}
+}
+
+// wordReq maps a residual empty-width gate to a word-boundary requirement code:
+// 1 => the boundary rune must be a word char (\b), 2 => must not be (\B), 0 =>
+// no word-boundary constraint. Text-anchor bits are ignored (always satisfied at
+// the position they guard).
+func wordReq(gate int) int {
+	switch {
+	case gate&emptyWordBoundary != 0:
+		return 1
+	case gate&emptyNoWordBoundary != 0:
+		return 2
+	default:
+		return 0
+	}
 }
 
 // onepassEdgeBody renders the capture writes plus the state assignment taken when

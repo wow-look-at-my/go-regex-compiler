@@ -31,6 +31,16 @@ const capMaxStates = 10000
 // capRange is an inclusive [lo,hi] rune range of a consuming instruction's class.
 type capRange struct{ lo, hi rune }
 
+// Empty-width assertion bits (mirror regexp/syntax.EmptyOp).
+const (
+	emptyBeginLine      = int(syntax.EmptyBeginLine)      // 1
+	emptyEndLine        = int(syntax.EmptyEndLine)        // 2
+	emptyBeginText      = int(syntax.EmptyBeginText)      // 4
+	emptyEndText        = int(syntax.EmptyEndText)        // 8
+	emptyWordBoundary   = int(syntax.EmptyWordBoundary)   // 16
+	emptyNoWordBoundary = int(syntax.EmptyNoWordBoundary) // 32
+)
+
 // capConfig is a live NFA position during construction: a consuming (or Match)
 // instruction plus the capture slots crossed on the unique epsilon path that
 // reached it at the current byte position. pending is sorted and de-duplicated;
@@ -38,10 +48,13 @@ type capRange struct{ lo, hi rune }
 // not matter, so a set is sufficient. pending is part of the enclosing state's
 // identity: two occurrences of the same instruction reached with different
 // pending captures are distinct states (e.g. the first vs. later iterations of a
-// `+` loop, where the group-start capture fires only on the first).
+// `+` loop, where the group-start capture fires only on the first). gate is the
+// OR of empty-width assertion bits crossed on the path (^ $ \b …); the assertion
+// must hold at the config's position.
 type capConfig struct {
 	pc      int
 	pending []int
+	gate    int
 }
 
 // capEdge is one outgoing transition of a capState: the consuming instruction's
@@ -62,16 +75,18 @@ type capState struct {
 	edges        []capEdge
 	accept       bool  // reachable Match => acceptable at end-of-input
 	acceptWrites []int // capture slots written at accept (Match config's pending)
+	acceptGate   int   // empty-width bits required at end-of-input to accept
 
 	configs []capConfig // build-time only: the NFA positions this state represents
 }
 
 // capDFA is the compiled onepass capture automaton.
 type capDFA struct {
-	states   []*capState
-	start    int
-	numSlots int
-	ascii    bool
+	states    []*capState
+	start     int
+	numSlots  int
+	ascii     bool
+	startGate int // empty-width bits required at position 0 to begin matching
 }
 
 // buildCapDFA constructs the onepass capture automaton for prog. It returns
@@ -110,12 +125,27 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 		}
 		st := d.states[queue[0]]
 		queue = queue[1:]
+		isStart := st.id == d.start
 
 		for _, c := range st.configs {
 			if prog.Inst[c.pc].Op == syntax.InstMatch {
 				st.accept = true
 				st.acceptWrites = c.pending
+				st.acceptGate = c.gate
 				continue
+			}
+			// A consuming config's gate must hold at that config's position. At
+			// the start it is folded into d.startGate (checked once at pos 0);
+			// anywhere else it is an interior assertion between two consumed runes
+			// that the compiled path does not resolve, so fall back.
+			if c.gate != 0 {
+				if !isStart {
+					return nil, false
+				}
+				if d.startGate != 0 && d.startGate != c.gate {
+					return nil, false // divergent start gates
+				}
+				d.startGate = c.gate
 			}
 			ranges, anyR, anyNL, rok := instRanges(prog, c.pc)
 			if !rok {
@@ -139,8 +169,43 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 		}
 	}
 
+	// A non-zero start gate is validated once at position 0, so the start state
+	// must not be re-entered mid-match (where the gate would no longer hold).
+	if d.startGate != 0 {
+		for _, st := range d.states {
+			for _, e := range st.edges {
+				if e.next == d.start {
+					return nil, false
+				}
+			}
+		}
+	}
+
+	// Only text-anchor (^ $ \A \z, always satisfied at the ends) and word-boundary
+	// gates are resolvable by the compiled path; anything else falls back.
+	if !gateResolvable(d.startGate &^ (emptyBeginText | emptyBeginLine)) {
+		return nil, false
+	}
+	for _, st := range d.states {
+		if st.accept && !gateResolvable(st.acceptGate&^(emptyEndText|emptyEndLine)) {
+			return nil, false
+		}
+	}
+
 	d.ascii = capIsASCII(d)
 	return d, true
+}
+
+// gateResolvable reports whether the residual gate (after masking the text-edge
+// bits that are always satisfied at position 0 / end-of-input) is one the
+// compiled path can evaluate: nothing, or a single word-boundary assertion.
+func gateResolvable(residual int) bool {
+	switch residual {
+	case 0, emptyWordBoundary, emptyNoWordBoundary:
+		return true
+	default:
+		return false
+	}
 }
 
 // closureFrom computes the epsilon-closure of a single seed program counter,
@@ -169,6 +234,7 @@ type closer struct {
 	numSlots int
 	visited  []bool
 	work     []int // current pending-capture stack
+	gate     int   // current empty-width bits accumulated on this path
 	configs  []capConfig
 	ok       bool
 }
@@ -196,9 +262,13 @@ func (cs *closer) walk(pc int) {
 			}
 			pc = int(inst.Out)
 		case syntax.InstEmptyWidth:
-			// Empty-width assertions (^ $ \A \z \b \B) require boundary context
-			// the compiled path does not yet track; bail to the interpreter.
-			cs.ok = false
+			// Accumulate the assertion's required bits onto the path; the gate is
+			// validated per-position when the config is placed (start/accept), and
+			// interior gates cause a fall back in buildCapDFA.
+			saved := cs.gate
+			cs.gate |= int(inst.Arg)
+			cs.walk(int(inst.Out))
+			cs.gate = saved
 			return
 		case syntax.InstRune, syntax.InstRune1, syntax.InstRuneAny, syntax.InstRuneAnyNotNL, syntax.InstMatch:
 			cs.emit(pc)
@@ -216,7 +286,7 @@ func (cs *closer) emit(pc int) {
 	pend := append([]int(nil), cs.work...)
 	sort.Ints(pend)
 	pend = dedupInts(pend)
-	cs.configs = append(cs.configs, capConfig{pc: pc, pending: pend})
+	cs.configs = append(cs.configs, capConfig{pc: pc, pending: pend, gate: cs.gate})
 }
 
 // instRanges extracts the rune class of a consuming instruction as inclusive
@@ -315,6 +385,9 @@ func sortConfigs(configs []capConfig) {
 		if configs[i].pc != configs[j].pc {
 			return configs[i].pc < configs[j].pc
 		}
+		if configs[i].gate != configs[j].gate {
+			return configs[i].gate < configs[j].gate
+		}
 		return intsLess(configs[i].pending, configs[j].pending)
 	})
 }
@@ -323,6 +396,8 @@ func configKey(configs []capConfig) string {
 	var sb strings.Builder
 	for _, c := range configs {
 		sb.WriteString(strconv.Itoa(c.pc))
+		sb.WriteByte('/')
+		sb.WriteString(strconv.Itoa(c.gate))
 		sb.WriteByte(':')
 		for _, s := range c.pending {
 			sb.WriteString(strconv.Itoa(s))
