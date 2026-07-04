@@ -1,7 +1,6 @@
 package codegen
 
 import (
-	"bytes"
 	"fmt"
 	"regexp/syntax"
 	"unicode"
@@ -37,8 +36,45 @@ type submatchContext struct {
 	Regex         string
 	NumSlots      int
 	NumGroups     int // numSlots / 2
-	StartPC       int
-	Instructions  []nfaInstruction
+
+	// Onepass selects the COMPILED one-pass capture matcher: a straight-line
+	// `switch state` automaton with inline caps[k]=pos writes. When true the OP*
+	// fields below drive emission.
+	Onepass     bool
+	OPStart     int
+	OPStates    []onepassEmitState
+	OPAccepts   []onepassAccept
+	OPHasAccept bool
+	ASCII       bool // compiled path: byte fast-path vs. rune decoding
+	HasRanges   bool // compiled path: any match.InRange call emitted
+
+	// Empty-width (\b/\B) boundary gates for the compiled path. Text anchors
+	// (^ $ \A \z) are folded away as always-satisfied at the input ends.
+	OPStartWord     int    // 0 none, 1 first rune must be a word char, 2 must not
+	OPNeedFirstRune bool   // decode the first rune for the start gate
+	OPNeedLastRune  bool   // decode the last rune for an accept gate
+	OPWordFunc      string // emitted word-char helper name ("" if unused)
+
+	// TDFA selects the COMPILED tagged-DFA capture matcher for patterns with
+	// genuine capture ambiguity that the one-pass path rejects (e.g. `(a*)(a*)`,
+	// `(a|ab)(a*)`, `(?i)abc`). Like the one-pass path it emits a straight-line
+	// `switch state` machine with NO interpreter; unlike it, transitions carry
+	// fixed register operations (set-to-position / copy) over an integer register
+	// file, and the accepting state reads the winning config's register block.
+	TDFA        bool
+	TDStart     int
+	TDRegCount  int      // size of the register file (maxConfigs * numSlots)
+	TDStartInit []string // register writes to initialize the start state at pos 0
+	TDStates    []tdEmitState
+	TDAccepts   []tdEmitAccept
+	TDHasAccept bool
+	TDUsesPos   bool // any transition sets a register to the current position (np)
+
+	// Priv is an unexported, per-matcher identifier prefix (the index func name
+	// with a lower-cased first rune). The one-pass path uses it to name the
+	// generated word-char helper (<priv>Word) so multiple matchers sharing a
+	// package never collide.
+	Priv string
 
 	// Names accessor.
 	NamesFuncName string
@@ -57,19 +93,7 @@ type structField struct {
 	Group int    // capture group index this field reads from
 }
 
-type nfaInstruction struct {
-	Index  int
-	OpName string // human-readable op, emitted as a comment
-	OpNum  int    // numeric op emitted into the package-level table
-	Out    uint32
-	// Arg holds the instruction's argument. For opCapture it is the capture
-	// slot; for opEmpty it is the syntax.EmptyOp assertion bitmask (the
-	// generated sim ANDs it against the satisfied bits at each position).
-	Arg   int
-	Runes string // empty if no runes
-}
-
-func buildSubmatchContext(opts SubmatchOptions) submatchContext {
+func buildSubmatchContext(opts SubmatchOptions) (submatchContext, error) {
 	numSlots := (opts.NumGroups + 1) * 2
 
 	if opts.NamesFuncName == "" {
@@ -82,30 +106,34 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		opts.StructFunc = "FindCaptures"
 	}
 
+	indexFuncName := opts.FuncName + "Index"
 	ctx := submatchContext{
 		FuncName:      opts.FuncName,
-		IndexFuncName: opts.FuncName + "Index",
+		IndexFuncName: indexFuncName,
 		MatchFunc:     opts.MatchFunc,
 		Regex:         opts.Regex,
 		NumSlots:      numSlots,
 		NumGroups:     numSlots / 2,
-		StartPC:       opts.Prog.Start,
+		Priv:          lowerFirst(indexFuncName),
 		NamesFuncName: opts.NamesFuncName,
 		GroupNames:    normalizeGroupNames(opts.GroupNames, opts.NumGroups),
 	}
 
-	for i, inst := range opts.Prog.Inst {
-		ni := nfaInstruction{
-			Index:  i,
-			OpName: instOpName(inst.Op),
-			OpNum:  instOpNum(inst.Op),
-			Out:    inst.Out,
-			Arg:    int(inst.Arg),
-		}
-		if len(inst.Rune) > 0 {
-			ni.Runes = formatRunes(inst.Rune)
-		}
-		ctx.Instructions = append(ctx.Instructions, ni)
+	// Every pattern compiles to a straight-line `switch state` machine. There is
+	// NO run-time interpreter anywhere. Two compiled paths, tried in order:
+	//   1. one-pass: when each input rune selects a unique next instruction, emit
+	//      inline capture writes to fixed slots (also handles edge \b/\B, text
+	//      anchors, and provably-always-true interior word boundaries).
+	//   2. TDFA: for genuine capture ambiguity (adjacent stars, overlapping
+	//      alternation, (?i) fold classes), determinize into a register machine
+	//      that resolves the ambiguity at construction time.
+	// If neither applies (an interior text anchor, or DFA state explosion), we
+	// return a clean error — there is no interpreter to fall back to.
+	switch {
+	case tryOnepass(&ctx, opts):
+	case tryTDFA(&ctx, opts):
+	default:
+		return submatchContext{}, fmt.Errorf("cannot compile submatch for %q to a state machine: the pattern needs an interior text-anchor assertion the DFA cannot evaluate, or exceeds the DFA state budget", opts.Regex)
 	}
 
 	// Decide whether to emit the typed struct: opt-in AND at least one named
@@ -121,7 +149,29 @@ func buildSubmatchContext(opts SubmatchOptions) submatchContext {
 		}
 	}
 
-	return ctx
+	return ctx, nil
+}
+
+// tryOnepass fills ctx with the one-pass compiled matcher if the pattern is
+// one-pass, reporting success.
+func tryOnepass(ctx *submatchContext, opts SubmatchOptions) bool {
+	d, ok := buildCapDFA(opts.Prog, opts.NumGroups)
+	if !ok {
+		return false
+	}
+	fillOnepass(ctx, d)
+	return true
+}
+
+// tryTDFA fills ctx with the compiled tagged-DFA register matcher if the pattern
+// determinizes within budget, reporting success.
+func tryTDFA(ctx *submatchContext, opts SubmatchOptions) bool {
+	d, ok := buildTDFA(opts.Prog, opts.NumGroups)
+	if !ok {
+		return false
+	}
+	fillTDFA(ctx, d)
+	return true
 }
 
 // normalizeGroupNames returns a slice of length numGroups+1 (index 0 == "").
@@ -183,72 +233,12 @@ func exportFieldName(name string) string {
 	return string(unicode.ToUpper(r)) + name[size:]
 }
 
-func instOpName(op syntax.InstOp) string {
-	switch op {
-	case syntax.InstRune:
-		return "opRune"
-	case syntax.InstRune1:
-		return "opRune1"
-	case syntax.InstRuneAny:
-		return "opRuneAny"
-	case syntax.InstRuneAnyNotNL:
-		return "opRuneAnyNL"
-	case syntax.InstAlt, syntax.InstAltMatch:
-		return "opAlt"
-	case syntax.InstCapture:
-		return "opCapture"
-	case syntax.InstMatch:
-		return "opMatch"
-	case syntax.InstNop:
-		return "opNop"
-	case syntax.InstFail:
-		return "opFail"
-	case syntax.InstEmptyWidth:
-		return "opEmpty"
-	default:
-		return fmt.Sprintf("%d", op)
+// lowerFirst returns s with its first rune lower-cased, yielding an unexported
+// identifier prefix for the per-matcher word-char helper.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
 	}
-}
-
-// instOpNum maps a syntax.InstOp to the numeric op values used by the
-// generated table and simulation (the const legend in the nfaSim template
-// must stay in sync).
-func instOpNum(op syntax.InstOp) int {
-	switch op {
-	case syntax.InstRune:
-		return 0
-	case syntax.InstRune1:
-		return 1
-	case syntax.InstRuneAny:
-		return 2
-	case syntax.InstRuneAnyNotNL:
-		return 3
-	case syntax.InstAlt, syntax.InstAltMatch:
-		return 4
-	case syntax.InstCapture:
-		return 5
-	case syntax.InstMatch:
-		return 6
-	case syntax.InstNop:
-		return 7
-	case syntax.InstFail:
-		return 8
-	case syntax.InstEmptyWidth:
-		return 9
-	default:
-		return 8 // treat unknown ops as opFail: they can never match
-	}
-}
-
-func formatRunes(runes []rune) string {
-	var buf bytes.Buffer
-	buf.WriteString("[]rune{")
-	for i, r := range runes {
-		if i > 0 {
-			buf.WriteString(", ")
-		}
-		fmt.Fprintf(&buf, "%d", r)
-	}
-	buf.WriteString("}")
-	return buf.String()
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToLower(r)) + s[size:]
 }

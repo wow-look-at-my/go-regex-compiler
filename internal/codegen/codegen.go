@@ -54,6 +54,12 @@ type templateContext struct {
 	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
 	NumChains          int
 	HasRanges          bool
+	HasSubmatch        bool // a submatch family is generated
+
+	// Import need-flags, computed in Generate once the submatch path (one-pass
+	// vs. TDFA) is known, since that decides which packages are used.
+	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
+	NeedUTF8  bool // unicode/utf8
 
 	// EarlyAccept is set for modes where reaching ANY accepting state proves a
 	// match (prefix: some prefix matched). Transitions into an accepting state
@@ -95,6 +101,23 @@ type templateTransition struct {
 // Generate writes Go source code implementing a DFA matcher to w.
 func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	ctx := buildContext(d, opts)
+	ctx.HasSubmatch = opts.Submatch != nil
+
+	var subCtx submatchContext
+	if opts.Submatch != nil {
+		var err error
+		subCtx, err = buildSubmatchContext(*opts.Submatch)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Decide imports now that the submatch path is known. The bool matcher is
+	// always emitted; the compiled submatch paths (one-pass and TDFA) add
+	// match.InRange/utf8 as they need them. There is no interpreter path, so no
+	// generated code ever imports sync.
+	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && subCtx.HasRanges)
+	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && !subCtx.ASCII)
 
 	var buf bytes.Buffer
 
@@ -106,7 +129,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	}
 
 	if opts.Submatch != nil {
-		subCtx := buildSubmatchContext(*opts.Submatch)
 		if err := tmpl.ExecuteTemplate(&buf, "submatchFunc", subCtx); err != nil {
 			return fmt.Errorf("executing submatchFunc template: %w", err)
 		}

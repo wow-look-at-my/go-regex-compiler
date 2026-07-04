@@ -77,6 +77,12 @@ func TestValidateAssertionsRejected(t *testing.T) {
 		{"mid_multiline_dollar_full", "(?m:a$)\nb", true, true, "(?m)$"},
 		// \b that can never hold (word on both sides) is also rejected.
 		{"wordb_never_holds", `a\bb`, true, true, `\b`},
+		// Interior \b whose following side is a mixed class (.) is conditional,
+		// so it must error rather than compile: the compiled path folds only
+		// PROVABLY-always-true interior boundaries.
+		{"mid_wordb_before_word_mixed_after", `a\b.`, true, true, `\b`},
+		// Interior \B with a mixed class on both sides is likewise conditional.
+		{"mid_nonwordb_mixed_sides", `.\B.`, true, true, `\B`},
 		// Loops make a "leading" anchor reachable mid-match.
 		{"caret_in_loop_full", `(^a)+`, true, true, "^"},
 	}

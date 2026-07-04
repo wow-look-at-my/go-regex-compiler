@@ -307,10 +307,28 @@ func TestGenerateSubmatch(t *testing.T) {
 			output := buf.String()
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func FindSubmatch(input string) []string")
-			assert.Contains(t, output, "opRune")
-			assert.Contains(t, output, "nfaProg")
-			assert.Contains(t, output, "addThread")
-			assert.Contains(t, output, "runeMatch")
+			assert.Contains(t, output, "func FindSubmatchIndex(input string) []int")
+
+			if strings.Contains(output, "addThread") {
+				// Thompson interpreter fallback (ambiguous captures): the
+				// package-level NFA program + op-dispatch sim must be present.
+				assert.Contains(t, output, "opRune")
+				assert.Contains(t, output, "RuneMatch")
+				assert.Contains(t, output, "type findSubmatchIndexInst struct")
+				assert.Contains(t, output, "var findSubmatchIndexProg = []findSubmatchIndexInst{")
+				assert.Contains(t, output, "sync.Pool")
+			} else {
+				// Compiled one-pass matcher: a straight-line `switch state`
+				// automaton with inline capture writes and NO interpreter —
+				// no program table, thread lists, epsilon-closure, or pool.
+				assert.Contains(t, output, "switch state {")
+				assert.Contains(t, output, "caps[")
+				assert.NotContains(t, output, "findSubmatchIndexProg")
+				assert.NotContains(t, output, "RuneMatch")
+				assert.NotContains(t, output, "sync.Pool")
+			}
+			// The per-position map is gone from every path.
+			assert.NotContains(t, output, "make(map[int]bool)")
 		})
 	}
 }
@@ -379,9 +397,12 @@ func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
 	assert.Contains(t, out, "Matched bool")
 	assert.Contains(t, out, "func FindCaptures(input string) Captures")
 
-	// Empty-width assertion machinery is present in the core.
-	assert.Contains(t, out, "emptyOpsAt")
-	assert.Contains(t, out, "emptyWordBoundary")
+	// This pattern is one-pass, so the core is the COMPILED automaton: a
+	// `switch state` machine with inline capture writes and no interpreter.
+	assert.Contains(t, out, "switch state {")
+	assert.Contains(t, out, "caps[")
+	assert.NotContains(t, out, "addThread")
+	assert.NotContains(t, out, "sync.Pool")
 }
 
 func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {
@@ -446,33 +467,11 @@ func countGroups(re *syntax.Regexp) int {
 	return n
 }
 
-func TestInstOpName(t *testing.T) {
-	tests := []struct {
-		op   syntax.InstOp
-		want string
-	}{
-		{syntax.InstRune, "opRune"},
-		{syntax.InstRune1, "opRune1"},
-		{syntax.InstRuneAny, "opRuneAny"},
-		{syntax.InstRuneAnyNotNL, "opRuneAnyNL"},
-		{syntax.InstAlt, "opAlt"},
-		{syntax.InstAltMatch, "opAlt"},
-		{syntax.InstCapture, "opCapture"},
-		{syntax.InstMatch, "opMatch"},
-		{syntax.InstNop, "opNop"},
-		{syntax.InstFail, "opFail"},
-		{syntax.InstEmptyWidth, "opEmpty"},
-		{syntax.InstOp(255), "255"},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, instOpName(tt.op))
-	}
-}
-
-func TestFormatRunes(t *testing.T) {
-	assert.Equal(t, "[]rune{97}", formatRunes([]rune{'a'}))
-	assert.Equal(t, "[]rune{97, 122}", formatRunes([]rune{'a', 'z'}))
-	assert.Equal(t, "[]rune{48, 57, 65, 90}", formatRunes([]rune{'0', '9', 'A', 'Z'}))
+func TestLowerFirst(t *testing.T) {
+	assert.Equal(t, "", lowerFirst(""))
+	assert.Equal(t, "findSubIndex", lowerFirst("FindSubIndex"))
+	assert.Equal(t, "match", lowerFirst("match"))
+	assert.Equal(t, "xMatch", lowerFirst("XMatch"))
 }
 
 func TestBuildSubmatchContext(t *testing.T) {
@@ -482,30 +481,24 @@ func TestBuildSubmatchContext(t *testing.T) {
 	prog, err := syntax.Compile(re)
 	require.NoError(t, err)
 
-	ctx := buildSubmatchContext(SubmatchOptions{
+	ctx, err := buildSubmatchContext(SubmatchOptions{
 		FuncName:  "FindSubmatch",
 		MatchFunc: "Match",
 		Regex:     `([a-z]+)@([a-z]+)`,
 		Prog:      prog,
 		NumGroups: 2,
 	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "FindSubmatch", ctx.FuncName)
 	assert.Equal(t, "Match", ctx.MatchFunc)
 	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
 	assert.Equal(t, 3, ctx.NumGroups) // 6/2
-	assert.Equal(t, prog.Start, ctx.StartPC)
-	assert.Equal(t, len(prog.Inst), len(ctx.Instructions))
 
-	// Verify at least one instruction has runes
-	hasRunes := false
-	for _, inst := range ctx.Instructions {
-		if inst.Runes != "" {
-			hasRunes = true
-			break
-		}
-	}
-	assert.True(t, hasRunes, "expected at least one instruction with runes")
+	// This pattern is one-pass, so the compiled automaton drives emission.
+	assert.True(t, ctx.Onepass, "expected one-pass compilation")
+	assert.NotEmpty(t, ctx.OPStates, "compiled path must have automaton states")
+	assert.True(t, ctx.OPHasAccept, "compiled path must have an accepting state")
 }
 
 func TestGenerateChainCompression(t *testing.T) {
