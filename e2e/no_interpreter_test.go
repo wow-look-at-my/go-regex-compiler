@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"os"
 	"strings"
 	"testing"
@@ -29,9 +31,8 @@ var interpreterMarkers = []string{
 // pool at run time.
 func TestNoInterpreterInFixtures(t *testing.T) {
 	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	scanned := 0
 	for _, e := range entries {
 		name := e.Name()
@@ -39,19 +40,16 @@ func TestNoInterpreterInFixtures(t *testing.T) {
 			continue
 		}
 		data, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
+
 		src := string(data)
 		scanned++
 		for _, m := range interpreterMarkers {
-			if strings.Contains(src, m) {
-				t.Errorf("%s contains interpreter marker %q; generated matchers must be pure state machines", name, m)
-			}
+			assert.NotContains(t, src, m)
+
 		}
 	}
-	if scanned == 0 {
-		t.Fatal("no generated fixtures found to scan (run `go generate ./e2e/...`)")
-	}
+	require.NotEqual(t, 0, scanned)
+
 	t.Logf("scanned %d generated fixtures; all interpreter-free", scanned)
 }
