@@ -41,6 +41,10 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 		{`(\babc)`, true},         // leading \b: resolved as a start gate
 		{`(\w+)\b`, true},         // trailing \b: resolved as an accept gate
 		{`^(\d+)-(\d+)$`, true},   // ^ and $ text anchors fold away for full match
+		{`(a\Bb)`, true},          // interior \B (always true between word chars) folds to a no-op
+		{`(foo\Bbar)`, true},      // interior \B inside a single group
+		{`(foo\B)(bar)`, true},    // interior \B at a group boundary (left group)
+		{`(foo)(\Bbar)`, true},    // interior \B at a group boundary (right group)
 		{`([^"]*)"(\d+)"`, false}, // negated class -> non-ASCII -> rune path
 	}
 	for i, tt := range patterns {
@@ -64,12 +68,15 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 	}
 }
 
-// fallbackPatterns are patterns the compiled path must reject (ok=false), so the
-// caller uses the Thompson interpreter.
+// TestBuildCapDFAFallback lists patterns the one-pass path must decline
+// (ok=false) so the caller moves on to the TDFA register machine. Interior
+// empty-width assertions are NOT in this list: dfa.ValidateAssertions vets those
+// before codegen (an always-true \b/\B folds to a no-op, a conditional one like
+// (a)\b(.) errors), so buildCapDFA trusts the surviving assertion instead of
+// re-rejecting it here — the same way it trusts the match mode for text anchors.
 func TestBuildCapDFAFallback(t *testing.T) {
 	patterns := []string{
 		`(a*)(a*)`,  // ambiguous captures: both groups match 'a'
-		`(a)\b(.)`,  // interior \b between two consuming instructions
 		`(?i)(abc)`, // fold-case class (unsupported in compiled path)
 	}
 	for i, p := range patterns {
@@ -204,6 +211,40 @@ func TestGenerateSubmatchTDFA(t *testing.T) {
 	assert.NotContains(t, out, "findSubIndexProg")
 	assert.NotContains(t, out, "sync.Pool")
 	assert.NotContains(t, out, "EmptyOpsAt")
+}
+
+// TestInteriorNegWordBoundaryFolds verifies that an always-true interior \B
+// (proven safe by dfa.ValidateAssertions) is folded to a no-op by BOTH compiled
+// paths, so patterns like (\w+\B\w+) — ambiguous, hence TDFA — and (a\Bb) — a
+// literal sequence, hence one-pass — compile to a state machine with NO
+// interpreter. These are the exact patterns the interpreter used to serve.
+func TestInteriorNegWordBoundaryFolds(t *testing.T) {
+	// One-pass: (a\Bb) folds to (ab).
+	for _, p := range []string{`(a\Bb)`, `(foo\B)(bar)`} {
+		prog, n := compileProg(t, p)
+		d, ok := buildCapDFA(prog, n)
+		require.True(t, ok, "expected one-pass for %q after folding interior \\B", p)
+		require.NotNil(t, d)
+	}
+	// Ambiguous (adjacent \w+): the one-pass path declines, the TDFA path
+	// compiles it after skipping the always-true \B in the closure.
+	for _, p := range []string{`(\w+\B\w+)`, `(\w+)\B(\w+)`} {
+		prog, n := compileProg(t, p)
+		_, okOne := buildCapDFA(prog, n)
+		assert.False(t, okOne, "%q is ambiguous; one-pass must decline", p)
+		td, okTD := buildTDFA(prog, n)
+		require.True(t, okTD, "expected TDFA to compile %q after folding interior \\B", p)
+		require.NotEmpty(t, td.states)
+	}
+	// End to end: no interpreter machinery reaches the emitted code.
+	for _, p := range []string{`(a\Bb)`, `(\w+\B\w+)`, `(\w+)\B(\w+)`} {
+		out := generateNamedSubmatch(t, p, false)
+		assertValidGo(t, out)
+		assert.Contains(t, out, "switch state {")
+		assert.NotContains(t, out, "addThread")
+		assert.NotContains(t, out, "sync.Pool")
+		assert.NotContains(t, out, "EmptyOpsAt")
+	}
 }
 
 // TestBuildSubmatchContextTDFA verifies a pattern the one-pass path rejects

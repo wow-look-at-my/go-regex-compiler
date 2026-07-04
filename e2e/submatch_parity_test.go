@@ -150,6 +150,41 @@ func parityCases() []submatchParityCase {
 			findFn: FindWordsSub, indexFn: FindWordsSubIndex, namesFn: NamesWordsSub,
 			inputs: []string{"a", "ab", "abc", "a_1", "A9z", " "},
 		},
+
+		// Interior always-true \B cases: the \B sits between two word characters,
+		// where "no boundary" always holds, so it folds to a no-op. The literal
+		// sequences compile one-pass; the adjacent-\w+ pair compiles via TDFA.
+		// These are the exact patterns that used to require the interpreter.
+		{
+			name: "negwb_ab", pattern: `(a\Bb)`,
+			findFn: FindNegWBab, indexFn: FindNegWBabIndex, namesFn: NamesNegWBab,
+			inputs: []string{"ab", "a", "b", "abc", "aab", "ba", ""},
+		},
+		{
+			name: "negwb_foobar", pattern: `(foo\Bbar)`,
+			findFn: FindNegWBFoobar, indexFn: FindNegWBFoobarIndex, namesFn: NamesNegWBFoobar,
+			inputs: []string{"foobar", "foo", "bar", "foobarbaz", "fobar", "fooba"},
+		},
+		{
+			name: "negwb_foo_bar", pattern: `(foo\B)(bar)`,
+			findFn: FindNegWBFooBar, indexFn: FindNegWBFooBarIndex, namesFn: NamesNegWBFooBar,
+			inputs: []string{"foobar", "foo", "bar", "foobarx", "fooba"},
+		},
+		{
+			name: "negwb_foo_bar2", pattern: `(foo)(\Bbar)`,
+			findFn: FindNegWBFooBar2, indexFn: FindNegWBFooBar2Index, namesFn: NamesNegWBFooBar2,
+			inputs: []string{"foobar", "foo", "bar", "xfoobar", "fooba"},
+		},
+		{
+			name: "negwb_words", pattern: `(\w+\B\w+)`,
+			findFn: FindNegWBWords, indexFn: FindNegWBWordsIndex, namesFn: NamesNegWBWords,
+			inputs: []string{"ab", "abc", "a", "a1_", "A9z", " ", "hello", "a b"},
+		},
+		{
+			name: "negwb_two_words", pattern: `(\w+)\B(\w+)`,
+			findFn: FindNegWBTwoWords, indexFn: FindNegWBTwoWordsIndex, namesFn: NamesNegWBTwoWords,
+			inputs: []string{"ab", "abc", "a", "a1_", "A9z", " ", "hello", "a b"},
+		},
 	}
 }
 

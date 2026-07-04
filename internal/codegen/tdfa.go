@@ -101,16 +101,23 @@ type tdSeed struct {
 }
 
 // buildTDFA determinizes prog into a TDFA. numGroups excludes group 0. It
-// returns ok=false when the pattern uses an empty-width assertion (Phase A does
-// not compile interior/edge boundary conditions through the register machine —
-// those go to the one-pass path or error) or exceeds the state/config budget.
+// returns ok=false when the pattern carries a text-anchor assertion (^ $ \A \z
+// — the register construction evaluates epsilon paths with a fixed boundary
+// context and cannot honor those; the one-pass path handles the edge-anchored
+// cases, and interior ones error rather than miscompile) or exceeds the
+// state/config budget. A word-boundary assertion (\b/\B) is tolerated: any that
+// survives dfa.ValidateAssertions is provably always satisfied, so the closure
+// skips it as a no-op (see tdCloser.walk).
 func buildTDFA(prog *syntax.Prog, numGroups int) (*tdfaAutomaton, bool) {
-	// Reject any reachable empty-width assertion: the register construction below
-	// evaluates epsilon paths with a fixed boundary context, which is only sound
-	// when there are no ^ $ \A \z \b \B to satisfy. (The one-pass path handles
-	// the edge-anchored cases; interior assertions error rather than miscompile.)
+	// Reject text-anchor assertions; tolerate always-true word boundaries. The
+	// register construction below has no per-position boundary context, so a real
+	// ^ $ \A \z check cannot be compiled here. A \b/\B that reached codegen was
+	// admitted by dfa.ValidateAssertions ONLY because it always holds, making it a
+	// no-op the closure walks straight through.
 	for pc := range prog.Inst {
-		if prog.Inst[pc].Op == syntax.InstEmptyWidth {
+		inst := &prog.Inst[pc]
+		if inst.Op == syntax.InstEmptyWidth &&
+			int(inst.Arg)&^(emptyWordBoundary|emptyNoWordBoundary) != 0 {
 			return nil, false
 		}
 	}
@@ -239,6 +246,11 @@ func (c *tdCloser) walk(pc int) {
 			copy(c.work, saved)
 			pc = int(inst.Arg)
 		case syntax.InstNop:
+			pc = int(inst.Out)
+		case syntax.InstEmptyWidth:
+			// Always-true \b/\B (buildTDFA rejected every other assertion): the
+			// assertion consumes nothing and never fails, so walk straight through
+			// it exactly like a Nop.
 			pc = int(inst.Out)
 		case syntax.InstCapture:
 			slot := int(inst.Arg)

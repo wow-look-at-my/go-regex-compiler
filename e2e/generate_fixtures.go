@@ -70,6 +70,18 @@ var namedFixtures = []namedFixture{
 	{"gen_amb_ci_ss.go", `(?i)(a*)(a*)`, "MatchCaseISS", "FindCaseISS", "NamesCaseISS", "", ""},
 	{"gen_amb_digits.go", `(\d+)(\d*)`, "MatchDigitsSub", "FindDigitsSub", "NamesDigitsSub", "", ""},
 	{"gen_amb_words.go", `(\w+)(\w*)`, "MatchWordsSub", "FindWordsSub", "NamesWordsSub", "", ""},
+
+	// Interior always-true \B fixtures: dfa.ValidateAssertions proves the \B
+	// always holds (both sides are word chars), so the compiled paths fold it to
+	// a no-op. The literal sequences compile one-pass; the adjacent-\w+ patterns
+	// compile via the TDFA register machine. NONE emit an interpreter — these are
+	// the exact patterns the old instruction-table walker used to serve.
+	{"gen_negwb_ab.go", `(a\Bb)`, "MatchNegWBab", "FindNegWBab", "NamesNegWBab", "", ""},
+	{"gen_negwb_foobar.go", `(foo\Bbar)`, "MatchNegWBFoobar", "FindNegWBFoobar", "NamesNegWBFoobar", "", ""},
+	{"gen_negwb_foo_bar.go", `(foo\B)(bar)`, "MatchNegWBFooBar", "FindNegWBFooBar", "NamesNegWBFooBar", "", ""},
+	{"gen_negwb_foo_bar2.go", `(foo)(\Bbar)`, "MatchNegWBFooBar2", "FindNegWBFooBar2", "NamesNegWBFooBar2", "", ""},
+	{"gen_negwb_words.go", `(\w+\B\w+)`, "MatchNegWBWords", "FindNegWBWords", "NamesNegWBWords", "", ""},
+	{"gen_negwb_two_words.go", `(\w+)\B(\w+)`, "MatchNegWBTwoWords", "FindNegWBTwoWords", "NamesNegWBTwoWords", "", ""},
 }
 
 var fixtures = []fixture{

@@ -32,6 +32,15 @@ func fuzzCases() []fuzzCase {
 		{`(?i)(a*)(a*)`, FindCaseISSIndex, "aAb"},
 		{`(\d+)(\d*)`, FindDigitsSubIndex, "012"},
 		{`(\w+)(\w*)`, FindWordsSubIndex, "a1_ "},
+
+		// Interior always-true \B: folds to a no-op, so parity must hold under
+		// random input just like the equivalent assertion-free pattern.
+		{`(a\Bb)`, FindNegWBabIndex, "ab"},
+		{`(foo\Bbar)`, FindNegWBFoobarIndex, "fobar"},
+		{`(foo\B)(bar)`, FindNegWBFooBarIndex, "fobar"},
+		{`(foo)(\Bbar)`, FindNegWBFooBar2Index, "fobar"},
+		{`(\w+\B\w+)`, FindNegWBWordsIndex, "ab1_ "},
+		{`(\w+)\B(\w+)`, FindNegWBTwoWordsIndex, "ab1_ "},
 	}
 }
 

@@ -90,10 +90,13 @@ type capDFA struct {
 }
 
 // buildCapDFA constructs the onepass capture automaton for prog. It returns
-// ok=false if the pattern is not one-pass (ambiguous transitions), uses an
-// unsupported feature (fold-case classes, empty-width assertions), or exceeds
-// the state budget — in every such case the caller must fall back to the
-// interpreter. numGroups excludes group 0.
+// ok=false if the pattern is not one-pass (ambiguous transitions), uses a
+// fold-case class, carries an empty-width assertion the compiled path cannot
+// evaluate (an interior text anchor), or exceeds the state budget — in every
+// such case the caller falls back to the TDFA path and then, if that also
+// declines, returns an error (there is no interpreter). Leading/trailing text
+// anchors and provably-always-true word boundaries are handled here, not
+// rejected. numGroups excludes group 0.
 func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 	numSlots := (numGroups + 1) * 2
 	d := &capDFA{numSlots: numSlots}
@@ -134,18 +137,31 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 				st.acceptGate = c.gate
 				continue
 			}
-			// A consuming config's gate must hold at that config's position. At
-			// the start it is folded into d.startGate (checked once at pos 0);
-			// anywhere else it is an interior assertion between two consumed runes
-			// that the compiled path does not resolve, so fall back.
+			// A consuming config's gate must hold at that config's position.
+			//   - At the start it is folded into d.startGate (checked once at pos 0).
+			//   - An interior \b/\B is a no-op we drop: dfa.ValidateAssertions runs
+			//     before codegen on every path and admits an interior word-boundary
+			//     assertion ONLY where it is provably always satisfied (both sides
+			//     known, uniform, and consistent with it), so it never rejects a
+			//     real match. Dropping it and building the edge as if the assertion
+			//     were absent is exactly how text anchors fold away at the match
+			//     edges — e.g. (a\Bb) compiles like (ab).
+			//   - An interior text anchor (^ $ \A \z) cannot be evaluated mid-match;
+			//     the validator rejects such a placement upstream, so one reaching
+			//     here means the pattern was not validated. Bail rather than
+			//     miscompile.
 			if c.gate != 0 {
-				if !isStart {
-					return nil, false
+				switch {
+				case isStart:
+					if d.startGate != 0 && d.startGate != c.gate {
+						return nil, false // divergent start gates
+					}
+					d.startGate = c.gate
+				case c.gate&^(emptyWordBoundary|emptyNoWordBoundary) != 0:
+					return nil, false // interior text anchor: unvalidated
+				default:
+					// interior word boundary, proven always-true upstream: no-op
 				}
-				if d.startGate != 0 && d.startGate != c.gate {
-					return nil, false // divergent start gates
-				}
-				d.startGate = c.gate
 			}
 			ranges, anyR, anyNL, rok := instRanges(prog, c.pc)
 			if !rok {
@@ -263,8 +279,10 @@ func (cs *closer) walk(pc int) {
 			pc = int(inst.Out)
 		case syntax.InstEmptyWidth:
 			// Accumulate the assertion's required bits onto the path; the gate is
-			// validated per-position when the config is placed (start/accept), and
-			// interior gates cause a fall back in buildCapDFA.
+			// resolved per-position when the config is placed (buildCapDFA): a
+			// start/accept gate becomes an edge word-boundary check, an interior
+			// word boundary is dropped as an always-true no-op, and an interior
+			// text anchor causes a fall back.
 			saved := cs.gate
 			cs.gate |= int(inst.Arg)
 			cs.walk(int(inst.Out))
