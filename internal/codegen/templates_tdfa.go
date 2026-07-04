@@ -45,6 +45,10 @@ func {{ .IndexFuncName }}(input string) []int {
 		switch state {
 {{- range .TDStates }}
 		case {{ .ID }}:
+{{- if .Guard }}
+			if {{ .Guard }} { return nil }
+			{{ .GuardBody }}
+{{- else }}
 			switch {
 {{- range .Cases }}
 			case {{ .Cond }}: {{ .Body }}
@@ -52,6 +56,7 @@ func {{ .IndexFuncName }}(input string) []int {
 			default:
 				return nil
 			}
+{{- end }}
 {{- end }}
 		default:
 			return nil
@@ -69,6 +74,10 @@ func {{ .IndexFuncName }}(input string) []int {
 		switch state {
 {{- range .TDStates }}
 		case {{ .ID }}:
+{{- if .Guard }}
+			if {{ .Guard }} { return nil }
+			{{ .GuardBody }}
+{{- else }}
 			switch {
 {{- range .Cases }}
 			case {{ .Cond }}: {{ .Body }}
@@ -76,6 +85,7 @@ func {{ .IndexFuncName }}(input string) []int {
 			default:
 				return nil
 			}
+{{- end }}
 {{- end }}
 		default:
 			return nil

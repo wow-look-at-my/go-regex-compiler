@@ -17,6 +17,15 @@ import (
 type tdEmitState struct {
 	ID    int
 	Cases []tdEmitCase
+
+	// Guard/GuardBody are set for a single-transition state — exactly one
+	// transition, whose non-match always returns nil. The template then emits an
+	// early-return guard instead of a one-case switch:
+	//   if <Guard> { return nil }
+	//   <GuardBody>
+	// Guard is the negation of the transition condition; GuardBody its reg ops.
+	Guard     string
+	GuardBody string
 }
 
 // tdEmitCase is one `case <cond>: <body>` of a state's inner switch. Body holds
@@ -68,6 +77,12 @@ func fillTDFA(ctx *submatchContext, d *tdfaAutomaton) {
 			cond, ur := tdCond(tr, d.ascii)
 			hasRanges = hasRanges || ur
 			es.Cases = append(es.Cases, tdEmitCase{Cond: cond, Body: body})
+		}
+		// A single transition (its non-match always returns nil) becomes an
+		// early-return guard, not a one-case switch.
+		if len(es.Cases) == 1 {
+			es.Guard = negateConds([]string{es.Cases[0].Cond})
+			es.GuardBody = es.Cases[0].Body
 		}
 		ctx.TDStates = append(ctx.TDStates, es)
 	}

@@ -16,6 +16,15 @@ type onepassEmitState struct {
 	ID      int
 	Cases   []onepassEmitCase
 	Default string // default clause: "return nil", or the write+goto for an any-rune edge
+
+	// Guard/GuardBody are set for a single-transition state — exactly one
+	// conditional edge and a "return nil" default (no any-rune fallback). The
+	// template then emits an early-return guard instead of a one-case switch:
+	//   if <Guard> { return nil }
+	//   <GuardBody>
+	// Guard is the negation of the edge condition; GuardBody is its write+goto.
+	Guard     string
+	GuardBody string
 }
 
 // onepassEmitCase is one `case <cond>: <body>` of a state's inner switch.
@@ -44,15 +53,25 @@ func fillOnepass(ctx *submatchContext, d *capDFA) {
 			continue
 		}
 		es := onepassEmitState{ID: st.id, Default: "return nil"}
+		hasAnyRune := false
+		var lastConds []string // alternatives of the sole conditional edge (for the guard)
 		for _, e := range st.edges {
 			body := onepassEdgeBody(e.writes, e.next)
 			if e.anyRune {
 				es.Default = body // any rune takes this edge
+				hasAnyRune = true
 				continue
 			}
-			cond, usedRange := onepassEdgeCond(e, d.ascii)
+			conds, usedRange := onepassEdgeConds(e, d.ascii)
 			hasRanges = hasRanges || usedRange
-			es.Cases = append(es.Cases, onepassEmitCase{Cond: cond, Body: body})
+			es.Cases = append(es.Cases, onepassEmitCase{Cond: strings.Join(conds, ", "), Body: body})
+			lastConds = conds
+		}
+		// A single conditional edge with a plain "return nil" default (no any-rune
+		// fallback) becomes an early-return guard, not a one-case switch.
+		if len(es.Cases) == 1 && !hasAnyRune {
+			es.Guard = negateConds(lastConds)
+			es.GuardBody = es.Cases[0].Body
 		}
 		ctx.OPStates = append(ctx.OPStates, es)
 	}
@@ -149,20 +168,42 @@ func onepassAcceptBody(writes []int) string {
 	return strings.Join(parts, "; ")
 }
 
-// onepassEdgeCond builds the case condition for a consuming edge and reports
-// whether it used match.InRange (so the caller can flag the import). anyRune
-// edges never reach here (they become the switch default).
-func onepassEdgeCond(e capEdge, ascii bool) (cond string, usedRange bool) {
+// onepassEdgeConds builds the case-condition alternatives for a consuming edge
+// (a Go `case A, B:` matches A || B) and reports whether any used match.InRange
+// (so the caller can flag the import). anyRune edges never reach here (they
+// become the switch default).
+func onepassEdgeConds(e capEdge, ascii bool) (conds []string, usedRange bool) {
 	if e.anyNotNL {
-		return "r != '\\n'", false
+		return []string{"r != '\\n'"}, false
 	}
-	parts := make([]string, 0, len(e.ranges))
+	conds = make([]string, 0, len(e.ranges))
 	for _, r := range e.ranges {
 		c, ur := rangeCond(r.lo, r.hi, ascii)
 		usedRange = usedRange || ur
-		parts = append(parts, c)
+		conds = append(conds, c)
 	}
-	return strings.Join(parts, ", "), usedRange
+	return conds, usedRange
+}
+
+// negateConds returns the guard expression that is true when NONE of a case's
+// condition alternatives match (a Go `case A, B:` matches A || B), used to
+// early-return from a single-transition state. A lone comparison is negated by
+// flipping its operator (`c == 'b'` -> `c != 'b'`, `r != '\n'` -> `r == '\n'`);
+// anything else (a range test, or multiple alternatives) is wrapped as `!(...)`
+// around the exact positive condition, which is always correct regardless of
+// shape — no fragile hand-rolled De Morgan.
+func negateConds(conds []string) string {
+	if len(conds) == 1 {
+		c := conds[0]
+		if lhs, rhs, ok := strings.Cut(c, " == "); ok {
+			return lhs + " != " + rhs
+		}
+		if lhs, rhs, ok := strings.Cut(c, " != "); ok {
+			return lhs + " == " + rhs
+		}
+		return "!(" + c + ")"
+	}
+	return "!(" + strings.Join(conds, " || ") + ")"
 }
 
 // rangeCond renders a single [lo,hi] test against the current byte (c) or rune

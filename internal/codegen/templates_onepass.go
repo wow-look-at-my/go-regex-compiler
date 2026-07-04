@@ -70,12 +70,17 @@ func {{ .IndexFuncName }}(input string) []int {
 		switch state {
 {{- range .OPStates }}
 		case {{ .ID }}:
+{{- if .Guard }}
+			if {{ .Guard }} { return nil }
+			{{ .GuardBody }}
+{{- else }}
 			switch {
 {{- range .Cases }}
 			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ .Default }}
 			}
+{{- end }}
 {{- end }}
 		default:
 			return nil
@@ -90,12 +95,17 @@ func {{ .IndexFuncName }}(input string) []int {
 		switch state {
 {{- range .OPStates }}
 		case {{ .ID }}:
+{{- if .Guard }}
+			if {{ .Guard }} { return nil }
+			{{ .GuardBody }}
+{{- else }}
 			switch {
 {{- range .Cases }}
 			case {{ .Cond }}: {{ .Body }}
 {{- end }}
 			default: {{ .Default }}
 			}
+{{- end }}
 {{- end }}
 		default:
 			return nil
