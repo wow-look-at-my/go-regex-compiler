@@ -180,4 +180,3 @@ func TestFuzzCorpusMatchesValidator(t *testing.T) {
 	t.Logf("fuzz corpus: %d combos compiled and differentially tested, %d rejected at generation",
 		accepted, rejected)
 }
-
