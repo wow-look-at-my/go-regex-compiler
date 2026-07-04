@@ -90,24 +90,19 @@ func fuzzStdlib(t *testing.T, pattern, mode string) *regexp.Regexp {
 // corpus against stdlib regexp.MatchString, including on invalid UTF-8.
 func TestFuzzDifferential(t *testing.T) {
 	require.NotEmpty(t, fuzzCorpus, "fuzz corpus is empty; run `go generate ./e2e/...`")
-	comparisons, failures := 0, 0
+	comparisons := 0
 	for _, c := range fuzzCorpus {
 		re := fuzzStdlib(t, c.Pattern, c.Mode)
 		for _, in := range fuzzInputsFor(c.Pattern) {
 			comparisons++
 			want := re.MatchString(in)
-			got := c.Fn(in)
-			if want != got {
-				failures++
-				if failures <= 50 {
-					t.Errorf("pattern %q mode %s input %q: stdlib=%v generated=%v",
-						c.Pattern, c.Mode, in, want, got)
-				}
-			}
+			assert.Equal(t, want, c.Fn(in),
+				"pattern %q mode %s input %q: generated matcher disagrees with stdlib",
+				c.Pattern, c.Mode, in)
 		}
 	}
-	t.Logf("fuzz differential: %d bool comparisons across %d (pattern,mode) cases, %d mismatches",
-		comparisons, len(fuzzCorpus), failures)
+	t.Logf("fuzz differential: %d bool comparisons across %d (pattern,mode) cases",
+		comparisons, len(fuzzCorpus))
 }
 
 // TestFuzzDifferentialSubmatch compares every generated submatch Index
@@ -115,23 +110,18 @@ func TestFuzzDifferential(t *testing.T) {
 // anchored (full-match) pattern.
 func TestFuzzDifferentialSubmatch(t *testing.T) {
 	require.NotEmpty(t, fuzzSubCorpus, "fuzz submatch corpus is empty; run `go generate ./e2e/...`")
-	comparisons, failures := 0, 0
+	comparisons := 0
 	for _, c := range fuzzSubCorpus {
 		re := regexp.MustCompile("^(?:" + c.Pattern + ")$")
 		for _, in := range fuzzInputsFor(c.Pattern) {
 			comparisons++
 			want := re.FindStringSubmatchIndex(in)
-			got := c.IndexFn(in)
-			if !intSlicesEqual(want, got) {
-				failures++
-				if failures <= 50 {
-					t.Errorf("pattern %q input %q: stdlib=%v generated=%v", c.Pattern, in, want, got)
-				}
-			}
+			assert.Equal(t, want, c.IndexFn(in),
+				"pattern %q input %q: generated Index disagrees with stdlib", c.Pattern, in)
 		}
 	}
-	t.Logf("fuzz differential: %d submatch comparisons across %d patterns, %d mismatches",
-		comparisons, len(fuzzSubCorpus), failures)
+	t.Logf("fuzz differential: %d submatch comparisons across %d patterns",
+		comparisons, len(fuzzSubCorpus))
 }
 
 // TestFuzzCorpusMatchesValidator re-derives, for every corpus pattern and
@@ -191,14 +181,3 @@ func TestFuzzCorpusMatchesValidator(t *testing.T) {
 		accepted, rejected)
 }
 
-func intSlicesEqual(a, b []int) bool {
-	if (a == nil) != (b == nil) || len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
