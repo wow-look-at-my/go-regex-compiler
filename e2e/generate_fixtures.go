@@ -5,7 +5,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"os"
+	"regexp/syntax"
+	"strconv"
+	"strings"
 
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
@@ -156,6 +160,264 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if err := generateFuzzCorpus(); err != nil {
+		fmt.Fprintf(os.Stderr, "gen_fuzz_corpus_test.go: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Differential fuzz corpus (see fuzz_diff_test.go)
+// ---------------------------------------------------------------------------
+
+// fuzzDirected are patterns targeting previously-broken generator classes:
+// prefix acceptance latching, chain-compression re-entry (including the
+// contains-mode restart into a chain-compressed start state), empty-width
+// assertions in all modes (combos dfa.ValidateAssertions rejects are skipped
+// here and pinned by TestFuzzCorpusMatchesValidator), (?i) submatch fold
+// orbits, contains-mode empty-match short-circuit bodies, the contains
+// literal/IndexByte fast paths, and invalid-UTF-8 parity.
+var fuzzDirected = []string{
+	// Prefix latch (audit B).
+	`a|abc`, `\D{3,5}`, `a(bc)?`,
+	// Chain-compression re-entry (audit C); the capturing variant also
+	// exercises the submatch cascade through the bool gate, and aaa[bc]
+	// exercises the contains-mode restart into a chain-compressed start.
+	`a{3}(?:ba{3})*`, `a{3}(ba{3})*`, `aaa[bc]`,
+	// Empty-width assertions (audit A). Most (pattern, mode) combos are
+	// rejected by ValidateAssertions and therefore absent from the corpus;
+	// the accepted no-op placements are differentially tested.
+	`a\bb`, `a$b`, `\b\s`, `^a`, `\bfoo\b`, `$`, `^`, `(?m)a$`, `(?m)^b`,
+	`\Bx`, `a\b`, `\bword\b`, `^a$`, `\A[ab]+\z`, `(?m)^$`, `foo\b`, `a(?:\b)+b`,
+	// (?i) submatch fold orbits (audit D; these have capture groups, so the
+	// full-mode entries also emit an Index function into the sub corpus).
+	`(?i)(a)bc`, `(?i)(hello)`, `(?i)(k)x`,
+	// Contains-mode empty-match short-circuits (audit E).
+	`\D?`, `x*`, `(a|b)*`, `a?b?`,
+	// Contains fast paths: complete literals (ASCII and Unicode; the latter
+	// also guards the no-utf8-import strings.Contains body) and the
+	// single-start-byte IndexByte skip.
+	`error`, `héllo`, `e[0-9]+`,
+	// General parity, including invalid-UTF-8 handling (matched as U+FFFD,
+	// exactly like regexp).
+	`(?i)abc`, `[^a]`, `a.{0,2}b`, `(a+)(b+)`, `(?s).`, `.+`,
+	`[a-z0-9][a-z0-9._-]{0,127}`,
+}
+
+const (
+	fuzzRandomCount = 50
+	fuzzSeed        = 20260702 // deterministic: same corpus on every generate
+	fuzzMaxStates   = 300      // keep the generated file small
+)
+
+// randFuzzPattern builds a random pattern from a constrained grammar covering
+// literals, classes, perl classes, dot, quantifiers (greedy and lazy),
+// grouping, alternation, case folding, and anchors/boundaries.
+func randFuzzPattern(r *rand.Rand, depth int) string {
+	atoms := []string{
+		"a", "b", "c", "x", "0", "1", "_", " ", `\n`,
+		"[a-c]", "[^a]", "[0-9]", `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, ".",
+		"[a-cx-z0-3]", "K", "k",
+	}
+	quant := []string{"", "", "", "?", "*", "+", "{2}", "{1,3}", "{2,}", "??", "*?", "+?"}
+	var b strings.Builder
+	n := 1 + r.Intn(4)
+	for i := 0; i < n; i++ {
+		var atom string
+		switch {
+		case depth > 0 && r.Intn(5) == 0:
+			inner := randFuzzPattern(r, depth-1)
+			switch r.Intn(3) {
+			case 0:
+				atom = "(" + inner + ")"
+			case 1:
+				atom = "(?:" + inner + ")"
+			default:
+				atom = "(?i:" + inner + ")"
+			}
+		case depth > 0 && r.Intn(7) == 0:
+			atom = "(?:" + randFuzzPattern(r, depth-1) + "|" + randFuzzPattern(r, depth-1) + ")"
+		default:
+			atom = atoms[r.Intn(len(atoms))]
+		}
+		b.WriteString(atom)
+		b.WriteString(quant[r.Intn(len(quant))])
+	}
+	p := b.String()
+	switch r.Intn(8) {
+	case 0:
+		p = "^" + p
+	case 1:
+		p = p + "$"
+	case 2:
+		p = `\b` + p
+	case 3:
+		p = p + `\b`
+	case 4:
+		p = "(?m)" + p
+	}
+	return p
+}
+
+// fuzzModes mirrors the CLI's mode table: template mode, function suffix,
+// tag string, and the assertion anchoring ValidateAssertions is given.
+var fuzzModes = []struct {
+	mode                   codegen.MatchMode
+	suffix, tag            string
+	anchorStart, anchorEnd bool
+}{
+	{codegen.MatchFull, "F", "full", true, true},
+	{codegen.MatchPrefix, "P", "prefix", true, false},
+	{codegen.MatchContains, "C", "contains", false, false},
+}
+
+// fuzzComboUsable reports whether a (pattern, mode) combination enters the
+// corpus: its assertions must validate for the mode's anchoring and its DFA
+// must build within the state cap. fuzz_diff_test.go re-derives this same
+// predicate to pin the corpus against the validator, so keep them in sync.
+func fuzzComboUsable(prog *syntax.Prog, mode codegen.MatchMode, anchorStart, anchorEnd bool) bool {
+	if dfa.ValidateAssertions(prog, anchorStart, anchorEnd) != nil {
+		return false
+	}
+	build := dfa.Build
+	if mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(prog)
+	return err == nil && len(d.States) <= fuzzMaxStates
+}
+
+// generateFuzzCorpus emits gen_fuzz_corpus_test.go: one bool matcher per
+// usable (pattern, mode), a submatch Index function for usable full-mode
+// patterns with capture groups, and registries for fuzz_diff_test.go.
+// Output is fully deterministic (fixed seed, fixed order).
+func generateFuzzCorpus() error {
+	patterns := append([]string{}, fuzzDirected...)
+	r := rand.New(rand.NewSource(fuzzSeed))
+	for len(patterns) < len(fuzzDirected)+fuzzRandomCount {
+		p := randFuzzPattern(r, 2)
+		res, err := parser.ParseResult(p)
+		if err != nil {
+			continue
+		}
+		d, err := dfa.Build(res.Prog)
+		if err != nil || len(d.States) > fuzzMaxStates {
+			continue
+		}
+		patterns = append(patterns, p)
+	}
+
+	var bodies bytes.Buffer
+	var boolEntries, subEntries []string
+	needMatch, needUTF8, needStrings := false, false, false
+
+	for i, p := range patterns {
+		for _, m := range fuzzModes {
+			res, err := parser.ParseResult(p)
+			if err != nil {
+				return fmt.Errorf("parse %q: %w", p, err)
+			}
+			if !fuzzComboUsable(res.Prog, m.mode, m.anchorStart, m.anchorEnd) {
+				continue // rejected assertions or state blowup: no matcher exists
+			}
+			build := dfa.Build
+			if m.mode == codegen.MatchContains {
+				build = dfa.BuildSearch
+			}
+			d, err := build(res.Prog)
+			if err != nil {
+				return fmt.Errorf("dfa %q mode=%s: %w", p, m.tag, err)
+			}
+			fn := fmt.Sprintf("fuzzMatch%d%s", i, m.suffix)
+			opts := codegen.Options{
+				PackageName: "e2e",
+				FuncName:    fn,
+				Regex:       p,
+				Mode:        m.mode,
+			}
+			opts.LiteralPrefix, opts.LiteralComplete = res.Prog.Prefix()
+			if m.mode == codegen.MatchFull && res.NumGroups > 0 {
+				opts.Submatch = &codegen.SubmatchOptions{
+					PackageName:   "e2e",
+					FuncName:      fmt.Sprintf("fuzzFind%d", i),
+					MatchFunc:     fn,
+					Regex:         p,
+					Prog:          res.Prog,
+					NumGroups:     res.NumGroups,
+					GroupNames:    res.GroupNames,
+					NamesFuncName: fmt.Sprintf("fuzzNames%d", i),
+				}
+				subEntries = append(subEntries,
+					fmt.Sprintf("\t{Pattern: %s, IndexFn: fuzzFind%dIndex},", strconv.Quote(p), i))
+			}
+			var buf bytes.Buffer
+			if err := codegen.Generate(&buf, d, opts); err != nil {
+				return fmt.Errorf("codegen %q mode=%s: %w", p, m.tag, err)
+			}
+			body, imports, err := splitGenerated(buf.String())
+			if err != nil {
+				return fmt.Errorf("split %q mode=%s: %w", p, m.tag, err)
+			}
+			for _, imp := range imports {
+				switch imp {
+				case `"github.com/wow-look-at-my/go-regex-compiler/match"`:
+					needMatch = true
+				case `"unicode/utf8"`:
+					needUTF8 = true
+				case `"strings"`:
+					needStrings = true
+				default:
+					return fmt.Errorf("unexpected import %s for %q", imp, p)
+				}
+			}
+			bodies.WriteString(body)
+			boolEntries = append(boolEntries,
+				fmt.Sprintf("\t{Pattern: %s, Mode: %q, Fn: %s},", strconv.Quote(p), m.tag, fn))
+		}
+	}
+
+	var out bytes.Buffer
+	out.WriteString("// Code generated by go-regex-compiler fixtures. DO NOT EDIT.\n")
+	out.WriteString("//\n// Differential fuzz corpus: deterministic matchers compared against stdlib\n")
+	out.WriteString("// regexp by fuzz_diff_test.go. Regenerate with `go generate ./e2e/...`.\n\n")
+	out.WriteString("package e2e\n\n")
+	if needMatch {
+		out.WriteString("import \"github.com/wow-look-at-my/go-regex-compiler/match\"\n")
+	}
+	if needStrings {
+		out.WriteString("import \"strings\"\n")
+	}
+	if needUTF8 {
+		out.WriteString("import \"unicode/utf8\"\n")
+	}
+	out.WriteString("\ntype fuzzCase struct {\n\tPattern string\n\tMode    string // \"full\", \"prefix\", \"contains\"\n\tFn      func(string) bool\n}\n\n")
+	out.WriteString("type fuzzSubCase struct {\n\tPattern string\n\tIndexFn func(string) []int\n}\n\n")
+	fmt.Fprintf(&out, "var fuzzPatterns = %#v\n\n", patterns)
+	fmt.Fprintf(&out, "var fuzzCorpus = []fuzzCase{\n%s\n}\n\n", strings.Join(boolEntries, "\n"))
+	fmt.Fprintf(&out, "var fuzzSubCorpus = []fuzzSubCase{\n%s\n}\n", strings.Join(subEntries, "\n"))
+	out.WriteString(bodies.String())
+
+	return os.WriteFile("gen_fuzz_corpus_test.go", out.Bytes(), 0644)
+}
+
+// splitGenerated strips the per-file header from one codegen.Generate output,
+// returning the function bodies and any import lines encountered (the corpus
+// is concatenated into a single file with one merged import set).
+func splitGenerated(src string) (body string, imports []string, err error) {
+	idx := strings.Index(src, "\npackage e2e\n")
+	if idx < 0 {
+		return "", nil, fmt.Errorf("no package clause found")
+	}
+	rest := src[idx+len("\npackage e2e\n"):]
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(rest, "\n") {
+		if strings.HasPrefix(line, "import ") {
+			imports = append(imports, strings.TrimSpace(strings.TrimPrefix(line, "import ")))
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String(), imports, nil
 }
 
 func generateNamed(f namedFixture) error {
