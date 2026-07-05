@@ -14,20 +14,14 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      # TEMPORARY (proof only): cosmo toolchain tarball is published under this
-      # buildhost branch key until wow-look-at-my/gosmopolitan#26 merges and
-      # master CI publishes once. Remove when flipping back to @v1.
-      GO_TOOLCHAIN_COSMO_BRANCH: claude/laughing-heisenberg-87lkft
     steps:
       - uses: actions/checkout@v4
-      # TEMPORARY (proof only): the action's own binary download is pinned to
-      # buildhost ?branch=v1, which does not have --targets yet (go-toolchain#275
-      # unmerged). Feed it the branch binary via the documented `binary` input.
-      - name: Download branch go-toolchain binary (TEMPORARY proof pin)
-        run: curl -fL --compressed --connect-timeout 20 --max-time 120 "https://dl.pazer.build/go-toolchain?branch=claude/laughing-heisenberg-87lkft&os=${RUNNER_OS}&arch=${RUNNER_ARCH}" -o /tmp/go-toolchain-branch
-      - uses: wow-look-at-my/go-toolchain@claude/laughing-heisenberg-87lkft
+      - uses: wow-look-at-my/go-toolchain@v1
         with:
           generate: 44e1d2620691
-          binary: /tmp/go-toolchain-branch
+          # One Cosmopolitan fat APE covers the linux/{amd64,arm64},
+          # darwin/arm64 and windows/amd64 release slots; darwin/amd64 and
+          # windows/arm64 stay native builds. Inert until go-toolchain#275
+          # reaches @v1 (until then @v1 ignores the input with a warning and
+          # builds the usual 6-binary native matrix).
           targets: 'cosmo,darwin/amd64,windows/arm64'
