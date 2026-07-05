@@ -26,7 +26,10 @@ This runs mod tidy, tests, coverage, and builds. Do not use `go build` or `go te
   directed patterns for historical bug classes plus 50 fixed-seed random
   patterns, every usable (pattern, mode) combo compared against stdlib
   `regexp` (assertion combos `dfa.ValidateAssertions` rejects are pinned as
-  rejected by `TestFuzzCorpusMatchesValidator`)
+  rejected by `TestFuzzCorpusMatchesValidator`; a full-mode capture pattern
+  whose submatch the compiler declines -- past the TDFA budget, no
+  interpreter fallback exists -- keeps its bool matchers and just drops the
+  Index function from the sub-corpus)
 - `bench/` -- generated-code-vs-regexp benchmarks (run `go generate ./bench/...` to create fixtures)
 
 ## Architecture
