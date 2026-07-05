@@ -208,6 +208,23 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
+			// Regression: chain-compression counters must reset when a DFA
+			// loop re-enters a compressed chain head (a{3} is compressed, and
+			// (?:ba{3})* re-enters it).
+			name: `a{3}(?:ba{3})*`, matchFn: MatchChainReentry,
+			cases: []testCase{
+				{"aaa", true},
+				{"aaabaaa", true},
+				{"aaabaaabaaa", true}, // stale counter made this a false negative
+				{"aaabaaaba", false},  // stale counter made this a false positive
+				{"aaabaaab", false},
+				{"aaab", false},
+				{"aa", false},
+				{"aaaa", false},
+				{"", false},
+			},
+		},
+		{
 			name: `[a-z0-9][a-z0-9._-]{0,127}`, matchFn: MatchContainer,
 			cases: []testCase{
 				{"a", true},
@@ -276,6 +293,22 @@ func TestIntegrationPrefix(t *testing.T) {
 				{"a", false},      // no prefix matches (b required)
 				{"aaac", false},
 				{"", false},
+			},
+		},
+		{
+			// Regression: the shorter alternative must count even though the
+			// DFA keeps walking toward the longer one. The prefix "a" matches
+			// even when the walk continues into the non-accepting "ab" state.
+			name: "a|abc", matchFn: MatchPrefixAlt,
+			cases: []testCase{
+				{"a", true},
+				{"ab", true}, // prefix "a" (the DFA dies later in a non-accepting state)
+				{"abc", true},
+				{"abcd", true},
+				{"ax", true}, // prefix "a"
+				{"b", false},
+				{"", false},
+				{"xa", false},
 			},
 		},
 		{
@@ -383,6 +416,24 @@ func TestIntegrationContains(t *testing.T) {
 			},
 		},
 		{
+			// Regression: the search DFA's restart default re-enters the
+			// chain-compressed start state (aaa is a compressed chain whose
+			// head IS the start state); the restart must reset the chain
+			// counter or a partial "aa" before a mismatch is counted toward
+			// the next attempt.
+			name: "aaa[bc]", matchFn: MatchContainsChainRestart,
+			cases: []testCase{
+				{"aaab", true},
+				{"aaac", true},
+				{"xxaaab", true},
+				{"aaxaaab", true},
+				{"aaxaab", false}, // stale counter made this a false positive
+				{"aab", false},
+				{"aaxab", false},
+				{"", false},
+			},
+		},
+		{
 			name: "a*b", matchFn: MatchContainsAStarB,
 			cases: []testCase{
 				{"b", true},
@@ -410,6 +461,41 @@ func TestIntegrationContains(t *testing.T) {
 				got := tt.matchFn(tc.input)
 				assert.Equal(t, tc.match, got)
 
+			}
+		})
+	}
+}
+
+// TestIntegrationAssertions covers the empty-width assertion placements that
+// dfa.ValidateAssertions ACCEPTS (provable no-ops for the mode); expectations
+// mirror stdlib regexp with the mode's anchoring. Placements the validator
+// cannot honor are rejected at generation time instead of being miscompiled
+// (see internal/dfa/assertions_test.go for the rejection coverage).
+func TestIntegrationAssertions(t *testing.T) {
+	tests := []struct {
+		name    string
+		matchFn func(string) bool
+		cases   []testCase
+	}{
+		{
+			// Full match: (?m)$ may accept before a newline, but full mode
+			// still has to consume the whole input, so it behaves like a\z.
+			name: `full (?m)a$`, matchFn: MatchMLineADollar,
+			cases: []testCase{
+				{"a", true},
+				{"ab", false},
+				{"a\n", false}, // the \n is left unconsumed
+				{"b", false},
+				{"", false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range tt.cases {
+				got := tt.matchFn(tc.input)
+				assert.Equal(t, tc.match, got, "input %q", tc.input)
 			}
 		})
 	}

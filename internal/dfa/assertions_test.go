@@ -72,6 +72,10 @@ func TestValidateAssertionsRejected(t *testing.T) {
 		{"trailing_dollar_contains", `abc$`, false, false, "contains"},
 		// Contains mode: the character before the match is unknown.
 		{"leading_wordb_contains", `\berror`, false, false, `\b`},
+		// Contains mode used to substring-match "foobar" for \bfoo\b.
+		{"surrounding_wordb_contains", `\bfoo\b`, false, false, `\b`},
+		// Prefix mode used to match "a" for the bare $.
+		{"bare_dollar_prefix", `$`, true, false, "end"},
 		// Mid-pattern multiline anchors depend on neighboring newlines.
 		{"mid_multiline_caret_full", "a\n(?m:^b)", true, true, "(?m)^"},
 		{"mid_multiline_dollar_full", "(?m:a$)\nb", true, true, "(?m)$"},

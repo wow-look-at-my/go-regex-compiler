@@ -20,7 +20,16 @@ This runs mod tidy, tests, coverage, and builds. Do not use `go build` or `go te
   empty-width assertions the DFA cannot honor for the given anchoring)
 - `internal/codegen/` -- Go code generation from DFA, includes templates for all match modes
 - `match/` -- runtime library imported by generated code (provides `InRange` helper)
-- `e2e/` -- integration and comparison tests (uses pre-generated fixtures like `bench/`)
+- `e2e/` -- integration and comparison tests (uses pre-generated fixtures like
+  `bench/`), including the deterministic differential fuzz corpus
+  (`fuzz_diff_test.go` vs the generated `gen_fuzz_corpus_test.go`): 40
+  directed patterns for historical bug classes plus 50 fixed-seed random
+  patterns, every usable (pattern, mode) combo compared against stdlib
+  `regexp` (assertion combos `dfa.ValidateAssertions` rejects are pinned as
+  rejected by `TestFuzzCorpusMatchesValidator`; a full-mode capture pattern
+  whose submatch the compiler declines -- past the TDFA budget, no
+  interpreter fallback exists -- keeps its bool matchers and just drops the
+  Index function from the sub-corpus)
 - `bench/` -- generated-code-vs-regexp benchmarks (run `go generate ./bench/...` to create fixtures)
 
 ## Architecture
@@ -60,8 +69,23 @@ Mode semantics in the emitted code:
 ## Key details
 
 - CLI uses cobra with double-hyphen flags (`--regex`, `--package`, etc.)
-- `--submatch` requires `--match full` (extraction is full-anchored)
+- `--submatch` requires `--match full` (extraction is full-anchored); on a
+  regex with no capture groups the flag is ignored with a stderr note
 - Invalid UTF-8 is matched exactly like `regexp`: each bad byte decodes to one U+FFFD rune
+- Case folding expands the FULL Unicode simple-fold orbit (no per-range cap):
+  `dfa.ExpandFoldCase`/`dfa.NormalizeRunePairs` are exported and drive the bool
+  matcher's DFA transitions; the TDFA submatch path performs the same full-orbit
+  expansion itself (`tdFoldIntervals`/`tdRuneInFold` in `internal/codegen/tdfa.go`),
+  so `(?i)k` matches the Kelvin sign in every generated function
+- Chain-compression counters are reset on every entry into a chain head from
+  outside the chain (`enterState` in codegen.go), including the contains-mode
+  restart default -- a stale counter miscounted re-entered chains
+- Header imports (match/utf8) are gated on the rendered bool-matcher body
+  actually containing a matching loop; short-circuit bodies (start-accepts,
+  literal `strings.Contains`) emit no unused imports. `Generate` then ORs in
+  the compiled submatch path's own match/utf8 needs (`NeedMatch`/`NeedUTF8`)
+- A regex containing control characters is emitted as a quoted string in the
+  `// Source regex:` header comment (a raw newline would split the comment)
 - The TDFA register file is a stack-allocated `[N]int` (N = maxConfigs*numSlots); a
   transition's ops snapshot any clobbered copy-source into a temp first, so they are
   hazard-free. No generated code builds a package-level program table — the emitted

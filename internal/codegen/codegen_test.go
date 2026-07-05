@@ -2,9 +2,11 @@ package codegen
 
 import (
 	"bytes"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"regexp/syntax"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -83,6 +85,36 @@ func TestGenerateHeader(t *testing.T) {
 	assert.Contains(t, output, "package mypkg")
 	assert.Contains(t, output, "func MatchABC(input string) bool")
 	assert.Contains(t, output, "Source regex: `abc`")
+}
+
+func TestGenerateControlCharPattern(t *testing.T) {
+	// A pattern containing a literal newline (or any control character) must
+	// not split the header line comments and break the generated file.
+	patterns := []string{"(?m)a$\nb", "a\tb", "a\rb"}
+	for _, pattern := range patterns {
+		t.Run(strconv.Quote(pattern), func(t *testing.T) {
+			for _, mode := range []MatchMode{MatchFull, MatchPrefix, MatchContains} {
+				d := buildDFA(t, pattern)
+				var buf bytes.Buffer
+				require.NoError(t, Generate(&buf, d, Options{
+					PackageName: "testpkg",
+					FuncName:    "Match",
+					Regex:       pattern,
+					Mode:        mode,
+				}))
+				output := buf.String()
+				assertValidGo(t, output)
+				assert.Contains(t, output, strconv.Quote(pattern),
+					"control-char pattern should be emitted as an escaped Go string literal")
+			}
+		})
+	}
+}
+
+func TestQuoteRegex(t *testing.T) {
+	assert.Equal(t, "`a\\d+`", quoteRegex(`a\d+`))
+	assert.Equal(t, `"a\nb"`, quoteRegex("a\nb"))
+	assert.Equal(t, `"a\x00b"`, quoteRegex("a\x00b"))
 }
 
 func TestGenerateASCIIOptimization(t *testing.T) {
@@ -233,6 +265,19 @@ func TestGenerateContainsMode(t *testing.T) {
 			assertValidGo(t, output)
 			assert.Contains(t, output, "func MatchContains(input string) bool")
 			assert.Contains(t, output, "reports whether any substring of input matches")
+		})
+	}
+}
+
+func TestGenerateContainsStartAcceptsCompiles(t *testing.T) {
+	// A contains-mode matcher whose DFA start state accepts short-circuits to
+	// `return true`; the header must not emit the match/utf8 imports the body
+	// never uses (they made 19/228 fuzzed contains patterns fail to compile).
+	for _, p := range []string{`\D?`, `x*`, `a?`, `\W*`, `(a|b)*`} {
+		t.Run(p, func(t *testing.T) {
+			out := generateWithMode(t, p, "MatchContains", MatchContains)
+			assertValidGo(t, out)
+			assertNoUnusedImports(t, out)
 		})
 	}
 }
@@ -509,6 +554,51 @@ func TestGenerateChainCompression(t *testing.T) {
 
 	lines := strings.Count(output, "\n")
 	assert.Less(t, lines, 200, "generated code should be compact with chain compression, got %d lines", lines)
+}
+
+func TestGenerateAcceptedAssertionPatternsCompile(t *testing.T) {
+	// Assertion patterns flow into codegen only when dfa.ValidateAssertions
+	// accepts them for the mode (the assertion is a provable no-op there);
+	// everything it rejects never reaches Generate. For every ACCEPTED
+	// (pattern, mode) combination the emitted code must be valid Go with no
+	// unused imports; the rejections themselves are covered by the dfa
+	// package's assertion tests.
+	patterns := []string{
+		`a\bb`, `\bfoo\b`, `^a`, `a$`, `$`, `^`, `\b`, `\B`, `\A[ab]+\z`,
+		`(?m)a$`, `(?m)^b`, `a\zb`, `\b\s`, `a(?:\b)+b`, `(?m)^$`, `\bé\b`,
+	}
+	accepted := 0
+	for _, p := range patterns {
+		for _, mode := range []MatchMode{MatchFull, MatchPrefix, MatchContains} {
+			t.Run(fmt.Sprintf("%s_%d", p, mode), func(t *testing.T) {
+				re, err := syntax.Parse(p, syntax.Perl)
+				require.NoError(t, err)
+				prog, err := syntax.Compile(re.Simplify())
+				require.NoError(t, err)
+				anchorStart := mode != MatchContains
+				anchorEnd := mode == MatchFull
+				if dfa.ValidateAssertions(prog, anchorStart, anchorEnd) != nil {
+					t.Skip("rejected by ValidateAssertions (the supported behavior)")
+				}
+				accepted++
+				out := generateWithMode(t, p, "Match", mode)
+				assertValidGo(t, out)
+				assertNoUnusedImports(t, out)
+			})
+		}
+	}
+	assert.Positive(t, accepted, "expected at least some assertion placements to be accepted")
+}
+
+func TestGenerateChainReentryReset(t *testing.T) {
+	// A DFA loop that re-enters a compressed chain head must reset the chain
+	// counter on entry: chain counters are function-scoped, so a stale count
+	// made a{3}(?:ba{3})* jump to the chain terminal too early on re-entry.
+	output := generateCode(t, `a{3}(?:ba{3})*`, "testpkg", "Match")
+	assertValidGo(t, output)
+	require.Contains(t, output, "chainCount1", "expected the (?:ba{3})* run to be chain-compressed")
+	assert.Regexp(t, `state = \d+; chainCount1 = 0`, output,
+		"transition into a re-enterable chain head must reset its counter")
 }
 
 func TestGenerateEmptyStates(t *testing.T) {

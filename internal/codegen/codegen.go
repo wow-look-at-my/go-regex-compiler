@@ -56,8 +56,15 @@ type templateContext struct {
 	HasRanges          bool
 	HasSubmatch        bool // a submatch family is generated
 
-	// Import need-flags, computed in Generate once the submatch path (one-pass
-	// vs. TDFA) is known, since that decides which packages are used.
+	// Import need-flags. buildContext seeds them with the bool matcher's needs,
+	// gated on the rendered body actually containing a matching loop: the
+	// short-circuit bodies (`return false` for an empty DFA, the empty-string
+	// edge case, the prefix/contains early return when the start state accepts,
+	// and the strings.Contains literal fast path) reference neither
+	// match.InRange nor utf8.DecodeRuneInString, so an unconditional import
+	// would make the generated file fail to compile ("imported and not used").
+	// Generate then ORs in the submatch path's needs (one-pass vs. TDFA) once
+	// that path is known, since it decides which packages the submatch core uses.
 	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
 	NeedUTF8  bool // unicode/utf8
 
@@ -67,6 +74,12 @@ type templateContext struct {
 	// state machine (they become unreachable).
 	EarlyAccept bool
 	acceptSet   map[int]bool // IDs of accepting states (for EarlyAccept rendering)
+	chainHeads  map[int]int  // chain head state ID -> chain index (for counter resets)
+
+	// RestartBody is the statement the contains-mode search loop runs when no
+	// transition matches: restart at the start state, resetting its chain
+	// counter when the start state is itself a compressed chain head.
+	RestartBody string
 
 	// SkipToByte enables the strings.IndexByte fast path in the contains-mode
 	// scan loop: when the search DFA sits in its start state and can only
@@ -112,12 +125,13 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 		}
 	}
 
-	// Decide imports now that the submatch path is known. The bool matcher is
-	// always emitted; the compiled submatch paths (one-pass and TDFA) add
-	// match.InRange/utf8 as they need them. There is no interpreter path, so no
-	// generated code ever imports sync.
-	ctx.NeedMatch = ctx.HasRanges || (ctx.HasSubmatch && subCtx.HasRanges)
-	ctx.NeedUTF8 = !ctx.ASCII || (ctx.HasSubmatch && !subCtx.ASCII)
+	// Fold the submatch path's import needs into the bool matcher's (seeded by
+	// buildContext, gated on a matching loop actually being rendered). The
+	// compiled submatch paths (one-pass and TDFA) add match.InRange/utf8 as
+	// they need them. There is no interpreter path, so no generated code ever
+	// imports sync.
+	ctx.NeedMatch = ctx.NeedMatch || (ctx.HasSubmatch && subCtx.HasRanges)
+	ctx.NeedUTF8 = ctx.NeedUTF8 || (ctx.HasSubmatch && !subCtx.ASCII)
 
 	var buf bytes.Buffer
 
@@ -206,6 +220,20 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 
 	compressChains(&ctx)
 
+	// Chain counters are function-scoped and a DFA loop (or the contains-mode
+	// restart) may re-enter a compressed chain's head state, so every entry
+	// into a chain head from outside the chain must reset that chain's
+	// counter; otherwise the matcher resumes with a stale count and jumps to
+	// the chain terminal too early (e.g. `a{3}(?:ba{3})*`, or a contains-mode
+	// restart into a chain-compressed start state).
+	ctx.chainHeads = make(map[int]int)
+	for _, s := range ctx.States {
+		if s.IsChain {
+			ctx.chainHeads[s.ID] = s.ChainIndex
+		}
+	}
+	ctx.RestartBody = ctx.enterState(ctx.Start)
+
 	for _, s := range ctx.States {
 		for _, t := range s.Transitions {
 			if t.Lo != t.Hi {
@@ -244,7 +272,28 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 	}
 
+	// Seed the match/utf8 import needs from the bool matcher: emit them only
+	// when the rendered body actually contains a matching loop (see the field
+	// comment on NeedMatch). Generate ORs in the submatch path's needs later.
+	loopRendered := len(ctx.States) > 0 && !ctx.EdgeCase &&
+		!(ctx.EarlyAccept && ctx.StartAccepts) && !ctx.LiteralContains
+	ctx.NeedMatch = ctx.HasRanges && loopRendered
+	ctx.NeedUTF8 = !ascii && loopRendered
+
 	return ctx
+}
+
+// enterState renders the statement for entering state id from outside it:
+// under EarlyAccept an accepting target proves the match, and a chain-head
+// target must have its chain counter reset before counting starts over.
+func (ctx *templateContext) enterState(id int) string {
+	if ctx.EarlyAccept && ctx.acceptSet[id] {
+		return "return true"
+	}
+	if idx, ok := ctx.chainHeads[id]; ok {
+		return fmt.Sprintf("state = %d; chainCount%d = 0", id, idx)
+	}
+	return fmt.Sprintf("state = %d", id)
 }
 
 func transitionShape(s templateState) string {
@@ -419,22 +468,30 @@ func quoteByte(r rune) string {
 	return strconv.QuoteRune(rune(byte(r)))
 }
 
+// quoteRegex renders the source pattern for use inside a // line comment.
+// The readable backtick form is used when safe; a pattern containing control
+// characters (a literal newline would terminate the comment and split the
+// generated file, and NUL is illegal in Go source) falls back to a
+// double-quoted, escaped, single-line Go string literal.
 func quoteRegex(s string) string {
+	for _, r := range s {
+		if r < ' ' || r == 0x7f {
+			return strconv.Quote(s)
+		}
+	}
 	return "`" + s + "`"
 }
 
 func stateTransition(ctx templateContext, s templateState, t templateTransition) string {
-	enter := func(id int) string {
-		if ctx.EarlyAccept && ctx.acceptSet[id] {
-			return "return true"
-		}
-		return fmt.Sprintf("state = %d", id)
-	}
 	if s.IsChain {
+		// While counting, control stays in the head state; the jump to the
+		// terminal is the only transition out of the chain (and the terminal
+		// itself may be another chain's head, or this chain's own head when
+		// the DFA loops straight back -- enterState resets the counter).
 		return fmt.Sprintf("if chainCount%d >= %d { %s } else { chainCount%d++ }",
-			s.ChainIndex, s.ChainMaxCount, enter(s.ChainTerminal), s.ChainIndex)
+			s.ChainIndex, s.ChainMaxCount, ctx.enterState(s.ChainTerminal), s.ChainIndex)
 	}
-	return enter(t.Next)
+	return ctx.enterState(t.Next)
 }
 
 type groupedCase struct {

@@ -232,9 +232,9 @@ func runeInstClass(inst *syntax.Inst) charClass {
 	if inst.Op == syntax.InstRuneAny || inst.Op == syntax.InstRuneAnyNotNL {
 		return charClass{word: true, nonword: true}
 	}
-	runes := normalizeRunePairs(inst.Rune)
+	runes := NormalizeRunePairs(inst.Rune)
 	if syntax.Flags(inst.Arg)&syntax.FoldCase != 0 {
-		runes = expandFoldCase(runes)
+		runes = ExpandFoldCase(runes)
 	}
 	var c charClass
 	for i := 0; i+1 < len(runes); i += 2 {

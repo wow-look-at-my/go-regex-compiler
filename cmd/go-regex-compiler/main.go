@@ -90,6 +90,9 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if submatch && result.NumGroups == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch ignored: the regex has no capture groups")
+	}
 
 	// Reject empty-width assertions the DFA cannot honor in this match mode
 	// (previously they were silently ignored, producing wrong matchers).
@@ -127,7 +130,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	if submatch && result.NumGroups > 0 {
 		structEnabled := submatchStruct
 		if submatchStruct && !codegen.HasNamedGroups(result.GroupNames) {
-			fmt.Fprintln(os.Stderr, "note: --submatch-struct ignored: the regex has no named capture groups")
+			fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch-struct ignored: the regex has no named capture groups")
 			structEnabled = false
 		}
 		opts.Submatch = &codegen.SubmatchOptions{

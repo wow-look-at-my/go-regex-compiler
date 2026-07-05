@@ -235,7 +235,7 @@ const asciiSearchLoopTemplate = `
 		switch state {
 {{ template "statesASCIISearch" . }}
 		default:
-			state = {{ .Start }}
+			{{ .RestartBody }}
 		}
 	}
 {{- end -}}
@@ -250,7 +250,7 @@ const utf8SearchLoopTemplate = `
 		switch state {
 {{ template "statesRuneSearch" . }}
 		default:
-			state = {{ .Start }}
+			{{ .RestartBody }}
 		}
 		i += size
 	}
@@ -265,8 +265,8 @@ const utf8SearchLoopTemplate = `
 const statesTemplate = `
 {{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
 {{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
-{{- define "statesASCIISearch" }}{{ template "statesInner" (args . "byte" (printf "state = %d" .Start)) }}{{ end }}
-{{- define "statesRuneSearch" }}{{ template "statesInner" (args . "rune" (printf "state = %d" .Start)) }}{{ end }}
+{{- define "statesASCIISearch" }}{{ template "statesInner" (args . "byte" .RestartBody) }}{{ end }}
+{{- define "statesRuneSearch" }}{{ template "statesInner" (args . "rune" .RestartBody) }}{{ end }}
 {{- define "statesInner" -}}
 {{- $ctx := index . 0 -}}
 {{- $condKind := index . 1 -}}

@@ -212,11 +212,11 @@ func (b *builder) move(states []int, lo, hi rune) []int {
 
 // runeMatchesRange checks if an InstRune instruction can match any rune in [lo, hi].
 func (b *builder) runeMatchesRange(inst *syntax.Inst, lo, hi rune) bool {
-	runes := normalizeRunePairs(inst.Rune)
+	runes := NormalizeRunePairs(inst.Rune)
 	foldCase := syntax.Flags(inst.Arg)&syntax.FoldCase != 0
 
 	if foldCase {
-		runes = expandFoldCase(runes)
+		runes = ExpandFoldCase(runes)
 	}
 
 	for i := 0; i < len(runes); i += 2 {
@@ -228,10 +228,11 @@ func (b *builder) runeMatchesRange(inst *syntax.Inst, lo, hi rune) bool {
 	return false
 }
 
-// normalizeRunePairs ensures the rune slice is in pair format [lo, hi, ...].
+// NormalizeRunePairs ensures the rune slice is in pair format [lo, hi, ...].
 // When Rune has odd length (e.g., a single rune from a literal with FoldCase),
-// each unpaired rune is treated as a [r, r] range.
-func normalizeRunePairs(runes []rune) []rune {
+// each unpaired rune is treated as a [r, r] range. Exported for the submatch
+// codegen alongside ExpandFoldCase.
+func NormalizeRunePairs(runes []rune) []rune {
 	if len(runes)%2 == 0 {
 		return runes
 	}
@@ -266,9 +267,9 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 				}
 			}
 		case syntax.InstRune:
-			runes := normalizeRunePairs(inst.Rune)
+			runes := NormalizeRunePairs(inst.Rune)
 			if syntax.Flags(inst.Arg)&syntax.FoldCase != 0 {
-				runes = expandFoldCase(runes)
+				runes = ExpandFoldCase(runes)
 			}
 			for i := 0; i < len(runes); i += 2 {
 				boundaries = append(boundaries, runes[i], runes[i+1]+1)
@@ -347,20 +348,36 @@ func serializeStateSet(states []int) string {
 	return sb.String()
 }
 
-// expandFoldCase expands rune range pairs to include all case-folded equivalents.
-func expandFoldCase(runes []rune) []rune {
+// Unicode simple case folding only exists inside [minFold, maxFold] (the same
+// band regexp/syntax uses); runes outside it fold only to themselves.
+const (
+	minFold = 0x0041
+	maxFold = 0x1e943
+)
+
+// ExpandFoldCase expands rune range pairs to include all case-folded
+// equivalents. The scan is clamped to the foldable band, which bounds the
+// work without dropping any fold (a previous version silently capped
+// expansion at 256 runes per range, losing folds at offsets >= 256, e.g.
+// U+212A KELVIN SIGN inside a wide folded range). Exported for the submatch
+// codegen, which expands fold orbits into the emitted NFA rune tables.
+func ExpandFoldCase(runes []rune) []rune {
 	var expanded []rune
 	expanded = append(expanded, runes...)
 
 	for i := 0; i < len(runes); i += 2 {
 		lo, hi := runes[i], runes[i+1]
-		for r := lo; r <= hi && r-lo < 256; r++ { // cap expansion to avoid huge ranges
+		if lo < minFold {
+			lo = minFold
+		}
+		if hi > maxFold {
+			hi = maxFold
+		}
+		for r := lo; r <= hi; r++ {
 			for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 				expanded = append(expanded, f, f)
 			}
 		}
-		// For large ranges, rely on the original range being sufficient
-		// (most Unicode case folding is within small alphabetic ranges)
 	}
 
 	return mergeRuneRanges(expanded)
