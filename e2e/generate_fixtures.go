@@ -59,13 +59,42 @@ var namedFixtures = []namedFixture{
 		"MatchRFC", "FindRFC", "NamesRFC", "RFC3339", "FindRFC3339"},
 	{"gen_named_logfmt.go", `(?P<key>\w+)="(?P<val>[^"]*)"`, "MatchLogfmt", "FindLogfmt", "NamesLogfmt", "LogfmtField", "FindLogfmtField"},
 	{"gen_named_opt2.go", `(?P<a>x)?(?P<b>y)`, "MatchOpt2", "FindOpt2", "NamesOpt2", "Opt2", "FindOpt2Struct"},
-	// Case-folded submatch regressions: the emitted NFA rune tables must carry
-	// the full fold orbit ((?i)a is stored by regexp/syntax as 'A' only).
+	// Case-folded submatch regressions: the compiled matcher must honor the
+	// full Unicode simple-fold orbit ((?i)a is stored by regexp/syntax as 'A'
+	// only; (?i)(k)x must also match the Kelvin sign). The fold class makes
+	// these ambiguous for the one-pass path, so they compile via TDFA.
 	{"gen_sub_casei_a.go", `(?i)(a)bc`, "MatchCaseIA", "FindCaseIA", "NamesCaseIA", "", ""},
 	{"gen_sub_casei_hello.go", `(?i)(hello)`, "MatchCaseIHello2", "FindCaseIHello2", "NamesCaseIHello2", "", ""},
 	{"gen_sub_casei_k.go", `(?i)(k)x`, "MatchCaseIK", "FindCaseIK", "NamesCaseIK", "", ""},
 	// Chain-compression re-entry cascades into submatch via the bool gate.
 	{"gen_sub_chain.go", `a{3}(ba{3})*`, "MatchChainSub", "FindChainSub", "NamesChainSub", "", ""},
+
+	// Ambiguous-capture fixtures: the one-pass path rejects these (two live
+	// consuming instructions can match the same rune, or a (?i) fold class), so
+	// they compile via the TDFA register machine. Exercised by the parity and
+	// differential-fuzz tests. NONE emit an interpreter.
+	{"gen_amb_starstar.go", `(a*)(a*)`, "MatchStarStar", "FindStarStar", "NamesStarStar", "", ""},
+	{"gen_amb_sss.go", `(a*)(a*)(a*)`, "MatchSSS", "FindSSS", "NamesSSS", "", ""},
+	{"gen_amb_altstar.go", `(a|ab)(a*)`, "MatchAltStar", "FindAltStar", "NamesAltStar", "", ""},
+	{"gen_amb_optstar.go", `(a?)(a*)`, "MatchOptStar", "FindOptStar", "NamesOptStar", "", ""},
+	{"gen_amb_neststar.go", `(a*)*`, "MatchNestStar", "FindNestStar", "NamesNestStar", "", ""},
+	{"gen_amb_casei.go", `(?i)(abc)`, "MatchCaseIG", "FindCaseIG", "NamesCaseIG", "", ""},
+	{"gen_amb_casei2.go", `(?i)(a)(b)`, "MatchCaseI2", "FindCaseI2", "NamesCaseI2", "", ""},
+	{"gen_amb_ci_ss.go", `(?i)(a*)(a*)`, "MatchCaseISS", "FindCaseISS", "NamesCaseISS", "", ""},
+	{"gen_amb_digits.go", `(\d+)(\d*)`, "MatchDigitsSub", "FindDigitsSub", "NamesDigitsSub", "", ""},
+	{"gen_amb_words.go", `(\w+)(\w*)`, "MatchWordsSub", "FindWordsSub", "NamesWordsSub", "", ""},
+
+	// Interior always-true \B fixtures: dfa.ValidateAssertions proves the \B
+	// always holds (both sides are word chars), so the compiled paths fold it to
+	// a no-op. The literal sequences compile one-pass; the adjacent-\w+ patterns
+	// compile via the TDFA register machine. NONE emit an interpreter — these are
+	// the exact patterns the old instruction-table walker used to serve.
+	{"gen_negwb_ab.go", `(a\Bb)`, "MatchNegWBab", "FindNegWBab", "NamesNegWBab", "", ""},
+	{"gen_negwb_foobar.go", `(foo\Bbar)`, "MatchNegWBFoobar", "FindNegWBFoobar", "NamesNegWBFoobar", "", ""},
+	{"gen_negwb_foo_bar.go", `(foo\B)(bar)`, "MatchNegWBFooBar", "FindNegWBFooBar", "NamesNegWBFooBar", "", ""},
+	{"gen_negwb_foo_bar2.go", `(foo)(\Bbar)`, "MatchNegWBFooBar2", "FindNegWBFooBar2", "NamesNegWBFooBar2", "", ""},
+	{"gen_negwb_words.go", `(\w+\B\w+)`, "MatchNegWBWords", "FindNegWBWords", "NamesNegWBWords", "", ""},
+	{"gen_negwb_two_words.go", `(\w+)\B(\w+)`, "MatchNegWBTwoWords", "FindNegWBTwoWords", "NamesNegWBTwoWords", "", ""},
 }
 
 var fixtures = []fixture{
@@ -336,7 +365,8 @@ func generateFuzzCorpus() error {
 				Mode:        m.mode,
 			}
 			opts.LiteralPrefix, opts.LiteralComplete = res.Prog.Prefix()
-			if m.mode == codegen.MatchFull && res.NumGroups > 0 {
+			withSubmatch := m.mode == codegen.MatchFull && res.NumGroups > 0
+			if withSubmatch {
 				opts.Submatch = &codegen.SubmatchOptions{
 					PackageName:   "e2e",
 					FuncName:      fmt.Sprintf("fuzzFind%d", i),
@@ -347,12 +377,25 @@ func generateFuzzCorpus() error {
 					GroupNames:    res.GroupNames,
 					NamesFuncName: fmt.Sprintf("fuzzNames%d", i),
 				}
-				subEntries = append(subEntries,
-					fmt.Sprintf("\t{Pattern: %s, IndexFn: fuzzFind%dIndex},", strconv.Quote(p), i))
 			}
 			var buf bytes.Buffer
-			if err := codegen.Generate(&buf, d, opts); err != nil {
+			err = codegen.Generate(&buf, d, opts)
+			if err != nil && withSubmatch {
+				// Submatch always compiles to a state machine (one-pass or
+				// TDFA) — there is no interpreter fallback, so the generator
+				// refuses patterns past the TDFA budget. Keep the bool
+				// matcher in the corpus and drop only the Index function.
+				withSubmatch = false
+				opts.Submatch = nil
+				buf.Reset()
+				err = codegen.Generate(&buf, d, opts)
+			}
+			if err != nil {
 				return fmt.Errorf("codegen %q mode=%s: %w", p, m.tag, err)
+			}
+			if withSubmatch {
+				subEntries = append(subEntries,
+					fmt.Sprintf("\t{Pattern: %s, IndexFn: fuzzFind%dIndex},", strconv.Quote(p), i))
 			}
 			body, imports, err := splitGenerated(buf.String())
 			if err != nil {
@@ -390,10 +433,10 @@ func generateFuzzCorpus() error {
 	if needUTF8 {
 		out.WriteString("import \"unicode/utf8\"\n")
 	}
-	out.WriteString("\ntype fuzzCase struct {\n\tPattern string\n\tMode    string // \"full\", \"prefix\", \"contains\"\n\tFn      func(string) bool\n}\n\n")
+	out.WriteString("\ntype fuzzBoolCase struct {\n\tPattern string\n\tMode    string // \"full\", \"prefix\", \"contains\"\n\tFn      func(string) bool\n}\n\n")
 	out.WriteString("type fuzzSubCase struct {\n\tPattern string\n\tIndexFn func(string) []int\n}\n\n")
 	fmt.Fprintf(&out, "var fuzzPatterns = %#v\n\n", patterns)
-	fmt.Fprintf(&out, "var fuzzCorpus = []fuzzCase{\n%s\n}\n\n", strings.Join(boolEntries, "\n"))
+	fmt.Fprintf(&out, "var fuzzCorpus = []fuzzBoolCase{\n%s\n}\n\n", strings.Join(boolEntries, "\n"))
 	fmt.Fprintf(&out, "var fuzzSubCorpus = []fuzzSubCase{\n%s\n}\n", strings.Join(subEntries, "\n"))
 	out.WriteString(bodies.String())
 

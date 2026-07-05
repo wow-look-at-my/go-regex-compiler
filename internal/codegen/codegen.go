@@ -54,6 +54,19 @@ type templateContext struct {
 	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
 	NumChains          int
 	HasRanges          bool
+	HasSubmatch        bool // a submatch family is generated
+
+	// Import need-flags. buildContext seeds them with the bool matcher's needs,
+	// gated on the rendered body actually containing a matching loop: the
+	// short-circuit bodies (`return false` for an empty DFA, the empty-string
+	// edge case, the prefix/contains early return when the start state accepts,
+	// and the strings.Contains literal fast path) reference neither
+	// match.InRange nor utf8.DecodeRuneInString, so an unconditional import
+	// would make the generated file fail to compile ("imported and not used").
+	// Generate then ORs in the submatch path's needs (one-pass vs. TDFA) once
+	// that path is known, since it decides which packages the submatch core uses.
+	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
+	NeedUTF8  bool // unicode/utf8
 
 	// EarlyAccept is set for modes where reaching ANY accepting state proves a
 	// match (prefix: some prefix matched). Transitions into an accepting state
@@ -67,16 +80,6 @@ type templateContext struct {
 	// transition matches: restart at the start state, resetting its chain
 	// counter when the start state is itself a compressed chain head.
 	RestartBody string
-
-	// NeedMatchImport/NeedUTF8Import gate the header imports on the rendered
-	// body actually containing a matching loop. The short-circuit bodies
-	// (`return false` for an empty DFA, the empty-string edge case, the
-	// prefix/contains early return when the start state accepts, and the
-	// strings.Contains literal fast path) reference neither match.InRange nor
-	// utf8.DecodeRuneInString, so an unconditional import would make the
-	// generated file fail to compile ("imported and not used").
-	NeedMatchImport bool
-	NeedUTF8Import  bool
 
 	// SkipToByte enables the strings.IndexByte fast path in the contains-mode
 	// scan loop: when the search DFA sits in its start state and can only
@@ -111,6 +114,24 @@ type templateTransition struct {
 // Generate writes Go source code implementing a DFA matcher to w.
 func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	ctx := buildContext(d, opts)
+	ctx.HasSubmatch = opts.Submatch != nil
+
+	var subCtx submatchContext
+	if opts.Submatch != nil {
+		var err error
+		subCtx, err = buildSubmatchContext(*opts.Submatch)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Fold the submatch path's import needs into the bool matcher's (seeded by
+	// buildContext, gated on a matching loop actually being rendered). The
+	// compiled submatch paths (one-pass and TDFA) add match.InRange/utf8 as
+	// they need them. There is no interpreter path, so no generated code ever
+	// imports sync.
+	ctx.NeedMatch = ctx.NeedMatch || (ctx.HasSubmatch && subCtx.HasRanges)
+	ctx.NeedUTF8 = ctx.NeedUTF8 || (ctx.HasSubmatch && !subCtx.ASCII)
 
 	var buf bytes.Buffer
 
@@ -122,7 +143,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	}
 
 	if opts.Submatch != nil {
-		subCtx := buildSubmatchContext(*opts.Submatch)
 		if err := tmpl.ExecuteTemplate(&buf, "submatchFunc", subCtx); err != nil {
 			return fmt.Errorf("executing submatchFunc template: %w", err)
 		}
@@ -252,12 +272,13 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 	}
 
-	// Emit the match/utf8 imports only when the rendered body actually
-	// contains a matching loop (see the field comment on NeedMatchImport).
+	// Seed the match/utf8 import needs from the bool matcher: emit them only
+	// when the rendered body actually contains a matching loop (see the field
+	// comment on NeedMatch). Generate ORs in the submatch path's needs later.
 	loopRendered := len(ctx.States) > 0 && !ctx.EdgeCase &&
 		!(ctx.EarlyAccept && ctx.StartAccepts) && !ctx.LiteralContains
-	ctx.NeedMatchImport = ctx.HasRanges && loopRendered
-	ctx.NeedUTF8Import = !ascii && loopRendered
+	ctx.NeedMatch = ctx.HasRanges && loopRendered
+	ctx.NeedUTF8 = !ascii && loopRendered
 
 	return ctx
 }
