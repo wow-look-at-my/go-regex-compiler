@@ -16,10 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TEMPORARY proof pin: exercises the APE-assimilation install fix on the
-      # go-toolchain action branch against the real v1 APE binary. Revert to
-      # @v1 once verified (next commit).
-      - uses: wow-look-at-my/go-toolchain@claude/laughing-heisenberg-87lkft
+      - uses: wow-look-at-my/go-toolchain@v1
         with:
           generate: 44e1d2620691
           # One Cosmopolitan fat APE covers the linux/{amd64,arm64} and
