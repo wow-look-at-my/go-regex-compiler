@@ -9,7 +9,9 @@ concurrency:
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
+  actions: read
+  checks: read
 
 jobs:
   test:
