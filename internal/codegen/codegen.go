@@ -24,29 +24,73 @@ const (
 
 // Options controls the generated code.
 type Options struct {
-	PackageName string         // Go package name
-	FuncName    string         // Name of the generated match function
-	Regex       string         // Original regex (for comment)
-	Mode        MatchMode      // Match mode (default: MatchFull)
+	PackageName string           // Go package name
+	FuncName    string           // Name of the generated match function
+	Regex       string           // Original regex (for comment)
+	Mode        MatchMode        // Match mode (default: MatchFull)
 	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
+
+	// LiteralPrefix/LiteralComplete mirror syntax.Prog.Prefix() for the
+	// pattern: when LiteralComplete is true the pattern matches exactly the
+	// literal LiteralPrefix, and contains mode compiles to a single
+	// strings.Contains call instead of a DFA scan.
+	LiteralPrefix   string
+	LiteralComplete bool
 }
 
 // templateContext holds all data needed by the top-level templates.
 type templateContext struct {
-	PackageName string
-	FuncName    string
-	Regex       string
-	ModeComment string
-	Mode        string // "full", "prefix", "contains"
-	ASCII       bool
-	Start       int
-	States      []templateState
-	AcceptIDs   []int
-	EdgeCase        bool // single accepting state with no transitions
+	PackageName        string
+	FuncName           string
+	Regex              string
+	ModeComment        string
+	Mode               string // "full", "prefix", "contains"
+	ASCII              bool
+	Start              int
+	States             []templateState
+	AcceptIDs          []int
+	EdgeCase           bool // single accepting state with no transitions
 	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts bool // start state is accepting (for contains early-return)
-	NumChains    int
-	HasRanges    bool
+	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
+	NumChains          int
+	HasRanges          bool
+	HasSubmatch        bool // a submatch family is generated
+
+	// Import need-flags. buildContext seeds them with the bool matcher's needs,
+	// gated on the rendered body actually containing a matching loop: the
+	// short-circuit bodies (`return false` for an empty DFA, the empty-string
+	// edge case, the prefix/contains early return when the start state accepts,
+	// and the strings.Contains literal fast path) reference neither
+	// match.InRange nor utf8.DecodeRuneInString, so an unconditional import
+	// would make the generated file fail to compile ("imported and not used").
+	// Generate then ORs in the submatch path's needs (one-pass vs. TDFA) once
+	// that path is known, since it decides which packages the submatch core uses.
+	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
+	NeedUTF8  bool // unicode/utf8
+
+	// EarlyAccept is set for modes where reaching ANY accepting state proves a
+	// match (prefix: some prefix matched). Transitions into an accepting state
+	// are rendered as "return true" and accepting states are dropped from the
+	// state machine (they become unreachable).
+	EarlyAccept bool
+	acceptSet   map[int]bool // IDs of accepting states (for EarlyAccept rendering)
+	chainHeads  map[int]int  // chain head state ID -> chain index (for counter resets)
+
+	// RestartBody is the statement the contains-mode search loop runs when no
+	// transition matches: restart at the start state, resetting its chain
+	// counter when the start state is itself a compressed chain head.
+	RestartBody string
+
+	// SkipToByte enables the strings.IndexByte fast path in the contains-mode
+	// scan loop: when the search DFA sits in its start state and can only
+	// leave it on one specific byte, memchr to that byte instead of stepping.
+	SkipToByte bool
+	SkipByte   rune
+
+	// LiteralContains replaces the contains-mode body with a single
+	// strings.Contains(input, Literal) call (pattern is one exact literal).
+	LiteralContains bool
+	Literal         string
 }
 
 // templateState mirrors dfa.State for use in templates.
@@ -70,6 +114,24 @@ type templateTransition struct {
 // Generate writes Go source code implementing a DFA matcher to w.
 func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	ctx := buildContext(d, opts)
+	ctx.HasSubmatch = opts.Submatch != nil
+
+	var subCtx submatchContext
+	if opts.Submatch != nil {
+		var err error
+		subCtx, err = buildSubmatchContext(*opts.Submatch)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Fold the submatch path's import needs into the bool matcher's (seeded by
+	// buildContext, gated on a matching loop actually being rendered). The
+	// compiled submatch paths (one-pass and TDFA) add match.InRange/utf8 as
+	// they need them. There is no interpreter path, so no generated code ever
+	// imports sync.
+	ctx.NeedMatch = ctx.NeedMatch || (ctx.HasSubmatch && subCtx.HasRanges)
+	ctx.NeedUTF8 = ctx.NeedUTF8 || (ctx.HasSubmatch && !subCtx.ASCII)
 
 	var buf bytes.Buffer
 
@@ -81,7 +143,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	}
 
 	if opts.Submatch != nil {
-		subCtx := buildSubmatchContext(*opts.Submatch)
 		if err := tmpl.ExecuteTemplate(&buf, "submatchFunc", subCtx); err != nil {
 			return fmt.Errorf("executing submatchFunc template: %w", err)
 		}
@@ -114,6 +175,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		Start:       d.Start,
 	}
 
+	ctx.acceptSet = make(map[int]bool)
 	for _, s := range d.States {
 		ts := templateState{ID: s.ID, Accept: s.Accept}
 		for _, tr := range s.Transitions {
@@ -124,6 +186,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		ctx.States = append(ctx.States, ts)
 		if s.Accept {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
+			ctx.acceptSet[s.ID] = true
 		}
 	}
 
@@ -137,7 +200,39 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 	}
 
+	// Prefix: some prefix matched. Contains: the DFA is a search DFA (built
+	// with dfa.BuildSearch), so an accepting state means some substring
+	// ending at the current position matched.
+	if opts.Mode == MatchPrefix || opts.Mode == MatchContains {
+		ctx.EarlyAccept = true
+	}
+	if ctx.EarlyAccept && !ctx.StartAccepts {
+		// Accepting states are never entered (transitions into them return
+		// true), so drop them from the emitted state machine.
+		var kept []templateState
+		for _, s := range ctx.States {
+			if !s.Accept {
+				kept = append(kept, s)
+			}
+		}
+		ctx.States = kept
+	}
+
 	compressChains(&ctx)
+
+	// Chain counters are function-scoped and a DFA loop (or the contains-mode
+	// restart) may re-enter a compressed chain's head state, so every entry
+	// into a chain head from outside the chain must reset that chain's
+	// counter; otherwise the matcher resumes with a stale count and jumps to
+	// the chain terminal too early (e.g. `a{3}(?:ba{3})*`, or a contains-mode
+	// restart into a chain-compressed start state).
+	ctx.chainHeads = make(map[int]int)
+	for _, s := range ctx.States {
+		if s.IsChain {
+			ctx.chainHeads[s.ID] = s.ChainIndex
+		}
+	}
+	ctx.RestartBody = ctx.enterState(ctx.Start)
 
 	for _, s := range ctx.States {
 		for _, t := range s.Transitions {
@@ -151,7 +246,54 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		}
 	}
 
+	// Contains fast paths.
+	if opts.Mode == MatchContains && !ctx.StartAccepts && !ctx.EdgeCase {
+		// The whole pattern is one literal: contains IS strings.Contains.
+		if opts.LiteralComplete && opts.LiteralPrefix != "" {
+			ctx.LiteralContains = true
+			ctx.Literal = opts.LiteralPrefix
+		}
+		// Otherwise, if the scan can only leave the start state on one
+		// specific byte, use strings.IndexByte (memchr) to jump to the next
+		// candidate instead of stepping the DFA byte-by-byte. Chain-compressed
+		// start states are excluded: for those, state == Start does not mean
+		// "at scan start" (the chain counter carries progress).
+		if !ctx.LiteralContains && ctx.ASCII {
+			for _, s := range ctx.States {
+				if s.ID != ctx.Start {
+					continue
+				}
+				if !s.IsChain && len(s.Transitions) == 1 && s.Transitions[0].Lo == s.Transitions[0].Hi {
+					ctx.SkipToByte = true
+					ctx.SkipByte = s.Transitions[0].Lo
+				}
+				break
+			}
+		}
+	}
+
+	// Seed the match/utf8 import needs from the bool matcher: emit them only
+	// when the rendered body actually contains a matching loop (see the field
+	// comment on NeedMatch). Generate ORs in the submatch path's needs later.
+	loopRendered := len(ctx.States) > 0 && !ctx.EdgeCase &&
+		!(ctx.EarlyAccept && ctx.StartAccepts) && !ctx.LiteralContains
+	ctx.NeedMatch = ctx.HasRanges && loopRendered
+	ctx.NeedUTF8 = !ascii && loopRendered
+
 	return ctx
+}
+
+// enterState renders the statement for entering state id from outside it:
+// under EarlyAccept an accepting target proves the match, and a chain-head
+// target must have its chain counter reset before counting starts over.
+func (ctx *templateContext) enterState(id int) string {
+	if ctx.EarlyAccept && ctx.acceptSet[id] {
+		return "return true"
+	}
+	if idx, ok := ctx.chainHeads[id]; ok {
+		return fmt.Sprintf("state = %d; chainCount%d = 0", id, idx)
+	}
+	return fmt.Sprintf("state = %d", id)
 }
 
 func transitionShape(s templateState) string {
@@ -326,16 +468,30 @@ func quoteByte(r rune) string {
 	return strconv.QuoteRune(rune(byte(r)))
 }
 
+// quoteRegex renders the source pattern for use inside a // line comment.
+// The readable backtick form is used when safe; a pattern containing control
+// characters (a literal newline would terminate the comment and split the
+// generated file, and NUL is illegal in Go source) falls back to a
+// double-quoted, escaped, single-line Go string literal.
 func quoteRegex(s string) string {
+	for _, r := range s {
+		if r < ' ' || r == 0x7f {
+			return strconv.Quote(s)
+		}
+	}
 	return "`" + s + "`"
 }
 
-func stateTransition(s templateState, t templateTransition) string {
+func stateTransition(ctx templateContext, s templateState, t templateTransition) string {
 	if s.IsChain {
-		return fmt.Sprintf("if chainCount%d >= %d { state = %d } else { chainCount%d++ }",
-			s.ChainIndex, s.ChainMaxCount, s.ChainTerminal, s.ChainIndex)
+		// While counting, control stays in the head state; the jump to the
+		// terminal is the only transition out of the chain (and the terminal
+		// itself may be another chain's head, or this chain's own head when
+		// the DFA loops straight back -- enterState resets the counter).
+		return fmt.Sprintf("if chainCount%d >= %d { %s } else { chainCount%d++ }",
+			s.ChainIndex, s.ChainMaxCount, ctx.enterState(s.ChainTerminal), s.ChainIndex)
 	}
-	return fmt.Sprintf("state = %d", t.Next)
+	return ctx.enterState(t.Next)
 }
 
 type groupedCase struct {
@@ -343,8 +499,8 @@ type groupedCase struct {
 	Body string
 }
 
-func groupByteTransitions(s templateState) []groupedCase {
-	return groupTransitions(s, func(t templateTransition) string {
+func groupByteTransitions(ctx templateContext, s templateState) []groupedCase {
+	return groupTransitions(ctx, s, func(t templateTransition) string {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("c == %s", quoteByte(t.Lo))
 		}
@@ -352,8 +508,8 @@ func groupByteTransitions(s templateState) []groupedCase {
 	})
 }
 
-func groupRuneTransitions(s templateState) []groupedCase {
-	return groupTransitions(s, func(t templateTransition) string {
+func groupRuneTransitions(ctx templateContext, s templateState) []groupedCase {
+	return groupTransitions(ctx, s, func(t templateTransition) string {
 		if t.Lo == t.Hi {
 			return fmt.Sprintf("r == %s", quoteRune(t.Lo))
 		}
@@ -361,14 +517,14 @@ func groupRuneTransitions(s templateState) []groupedCase {
 	})
 }
 
-func groupTransitions(s templateState, condFn func(templateTransition) string) []groupedCase {
+func groupTransitions(ctx templateContext, s templateState, condFn func(templateTransition) string) []groupedCase {
 	var groups []groupedCase
 	i := 0
 	for i < len(s.Transitions) {
-		body := stateTransition(s, s.Transitions[i])
+		body := stateTransition(ctx, s, s.Transitions[i])
 		conds := condFn(s.Transitions[i])
 		j := i + 1
-		for j < len(s.Transitions) && stateTransition(s, s.Transitions[j]) == body {
+		for j < len(s.Transitions) && stateTransition(ctx, s, s.Transitions[j]) == body {
 			conds += ", " + condFn(s.Transitions[j])
 			j++
 		}

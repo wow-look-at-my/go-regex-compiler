@@ -4,8 +4,8 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // submatchParityCase pairs a generated matcher family with its source pattern
@@ -94,6 +94,116 @@ func parityCases() []submatchParityCase {
 			name: "named_optional2", pattern: `(?P<a>x)?(?P<b>y)`,
 			findFn: FindOpt2, indexFn: FindOpt2Index, namesFn: NamesOpt2,
 			inputs: []string{"y", "xy", "x", "yy"},
+		},
+		{
+			name: "casei_group", pattern: `(?i)(a)bc`,
+			findFn: FindCaseIA, indexFn: FindCaseIAIndex, namesFn: NamesCaseIA,
+			inputs: []string{"abc", "ABC", "aBc", "Abc", "abC", "xbc", "abcd", "AbC"},
+		},
+		{
+			name: "casei_hello", pattern: `(?i)(hello)`,
+			findFn: FindCaseIHello2, indexFn: FindCaseIHello2Index, namesFn: NamesCaseIHello2,
+			inputs: []string{"hello", "HELLO", "hElLo", "Hello", "hellx", "HeLLo"},
+		},
+		{
+			name: "casei_kelvin", pattern: `(?i)(k)x`,
+			findFn: FindCaseIK, indexFn: FindCaseIKIndex, namesFn: NamesCaseIK,
+			inputs: []string{"kx", "Kx", "\u212Ax", "kX", "KX", "xx", "k"},
+		},
+		{
+			name: "chain_reentry_cascade", pattern: `a{3}(ba{3})*`,
+			findFn: FindChainSub, indexFn: FindChainSubIndex, namesFn: NamesChainSub,
+			inputs: []string{"aaa", "aaabaaa", "aaabaaabaaa", "aaabaaaba", "aaab", "aaaa"},
+		},
+
+		// Ambiguous-capture cases: these compile via the TDFA register machine
+		// (the one-pass path rejects them). Adjacent greedy stars, overlapping
+		// alternation, optional-then-star, nested star, and (?i) fold classes —
+		// the exact constructs that used to require the interpreter.
+		{
+			name: "amb_starstar", pattern: `(a*)(a*)`,
+			findFn: FindStarStar, indexFn: FindStarStarIndex, namesFn: NamesStarStar,
+			inputs: []string{"", "a", "aa", "aaa", "aaaa", "aaaaaa", "b", "ba"},
+		},
+		{
+			name: "amb_sss", pattern: `(a*)(a*)(a*)`,
+			findFn: FindSSS, indexFn: FindSSSIndex, namesFn: NamesSSS,
+			inputs: []string{"", "a", "aa", "aaa", "aaaaa", "b"},
+		},
+		{
+			name: "amb_altstar", pattern: `(a|ab)(a*)`,
+			findFn: FindAltStar, indexFn: FindAltStarIndex, namesFn: NamesAltStar,
+			inputs: []string{"a", "ab", "aa", "aab", "aba", "abab", "aaa", "b"},
+		},
+		{
+			name: "amb_optstar", pattern: `(a?)(a*)`,
+			findFn: FindOptStar, indexFn: FindOptStarIndex, namesFn: NamesOptStar,
+			inputs: []string{"", "a", "aa", "aaa", "b"},
+		},
+		{
+			name: "amb_neststar", pattern: `(a*)*`,
+			findFn: FindNestStar, indexFn: FindNestStarIndex, namesFn: NamesNestStar,
+			inputs: []string{"", "a", "aa", "aaa", "b"},
+		},
+		{
+			name: "amb_casei_group", pattern: `(?i)(abc)`,
+			findFn: FindCaseIG, indexFn: FindCaseIGIndex, namesFn: NamesCaseIG,
+			inputs: []string{"abc", "ABC", "AbC", "aBc", "abd", "ab", "abcd"},
+		},
+		{
+			name: "amb_casei2", pattern: `(?i)(a)(b)`,
+			findFn: FindCaseI2, indexFn: FindCaseI2Index, namesFn: NamesCaseI2,
+			inputs: []string{"ab", "AB", "aB", "Ab", "a", "b", "abc"},
+		},
+		{
+			name: "amb_casei_starstar", pattern: `(?i)(a*)(a*)`,
+			findFn: FindCaseISS, indexFn: FindCaseISSIndex, namesFn: NamesCaseISS,
+			inputs: []string{"", "a", "A", "aA", "AaA", "aaa", "b"},
+		},
+		{
+			name: "amb_digits", pattern: `(\d+)(\d*)`,
+			findFn: FindDigitsSub, indexFn: FindDigitsSubIndex, namesFn: NamesDigitsSub,
+			inputs: []string{"1", "12", "123", "1234", "a", ""},
+		},
+		{
+			name: "amb_words", pattern: `(\w+)(\w*)`,
+			findFn: FindWordsSub, indexFn: FindWordsSubIndex, namesFn: NamesWordsSub,
+			inputs: []string{"a", "ab", "abc", "a_1", "A9z", " "},
+		},
+
+		// Interior always-true \B cases: the \B sits between two word characters,
+		// where "no boundary" always holds, so it folds to a no-op. The literal
+		// sequences compile one-pass; the adjacent-\w+ pair compiles via TDFA.
+		// These are the exact patterns that used to require the interpreter.
+		{
+			name: "negwb_ab", pattern: `(a\Bb)`,
+			findFn: FindNegWBab, indexFn: FindNegWBabIndex, namesFn: NamesNegWBab,
+			inputs: []string{"ab", "a", "b", "abc", "aab", "ba", ""},
+		},
+		{
+			name: "negwb_foobar", pattern: `(foo\Bbar)`,
+			findFn: FindNegWBFoobar, indexFn: FindNegWBFoobarIndex, namesFn: NamesNegWBFoobar,
+			inputs: []string{"foobar", "foo", "bar", "foobarbaz", "fobar", "fooba"},
+		},
+		{
+			name: "negwb_foo_bar", pattern: `(foo\B)(bar)`,
+			findFn: FindNegWBFooBar, indexFn: FindNegWBFooBarIndex, namesFn: NamesNegWBFooBar,
+			inputs: []string{"foobar", "foo", "bar", "foobarx", "fooba"},
+		},
+		{
+			name: "negwb_foo_bar2", pattern: `(foo)(\Bbar)`,
+			findFn: FindNegWBFooBar2, indexFn: FindNegWBFooBar2Index, namesFn: NamesNegWBFooBar2,
+			inputs: []string{"foobar", "foo", "bar", "xfoobar", "fooba"},
+		},
+		{
+			name: "negwb_words", pattern: `(\w+\B\w+)`,
+			findFn: FindNegWBWords, indexFn: FindNegWBWordsIndex, namesFn: NamesNegWBWords,
+			inputs: []string{"ab", "abc", "a", "a1_", "A9z", " ", "hello", "a b"},
+		},
+		{
+			name: "negwb_two_words", pattern: `(\w+)\B(\w+)`,
+			findFn: FindNegWBTwoWords, indexFn: FindNegWBTwoWordsIndex, namesFn: NamesNegWBTwoWords,
+			inputs: []string{"ab", "abc", "a", "a1_", "A9z", " ", "hello", "a b"},
 		},
 	}
 }

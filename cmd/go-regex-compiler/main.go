@@ -77,14 +77,43 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --match mode %q: must be full, prefix, or contains", matchMode)
 	}
 
+	if submatch && mode != codegen.MatchFull {
+		// The generated submatch family extracts from a FULL-string match
+		// (parity with regexp on an anchored pattern). Combining it with
+		// prefix/contains produced a self-contradictory pair: Match(input)
+		// could be true while FindSubmatch(input) returned nil.
+		return fmt.Errorf("--submatch requires --match full: the submatch functions extract capture groups from a full-string match, which %s mode does not produce", matchMode)
+	}
+
 	// Stage 1: Parse regex into NFA (with capture group info)
 	result, err := parser.ParseResult(regex)
 	if err != nil {
 		return err
 	}
+	if submatch && result.NumGroups == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch ignored: the regex has no capture groups")
+	}
 
-	// Stage 2: Build DFA from NFA
-	d, err := dfa.Build(result.Prog)
+	// Reject empty-width assertions the DFA cannot honor in this match mode
+	// (previously they were silently ignored, producing wrong matchers).
+	anchorStart, anchorEnd := true, true
+	switch mode {
+	case codegen.MatchPrefix:
+		anchorEnd = false
+	case codegen.MatchContains:
+		anchorStart, anchorEnd = false, false
+	}
+	if err := dfa.ValidateAssertions(result.Prog, anchorStart, anchorEnd); err != nil {
+		return err
+	}
+
+	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search
+	// DFA so the generated matcher scans the input in a single pass.
+	build := dfa.Build
+	if mode == codegen.MatchContains {
+		build = dfa.BuildSearch
+	}
+	d, err := build(result.Prog)
 	if err != nil {
 		return err
 	}
@@ -96,11 +125,12 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		Regex:       regex,
 		Mode:        mode,
 	}
+	opts.LiteralPrefix, opts.LiteralComplete = result.Prog.Prefix()
 
 	if submatch && result.NumGroups > 0 {
 		structEnabled := submatchStruct
 		if submatchStruct && !codegen.HasNamedGroups(result.GroupNames) {
-			fmt.Fprintln(os.Stderr, "note: --submatch-struct ignored: the regex has no named capture groups")
+			fmt.Fprintln(cmd.ErrOrStderr(), "note: --submatch-struct ignored: the regex has no named capture groups")
 			structEnabled = false
 		}
 		opts.Submatch = &codegen.SubmatchOptions{

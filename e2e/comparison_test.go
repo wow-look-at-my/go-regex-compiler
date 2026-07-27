@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/codegen"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/parser"
@@ -63,6 +63,10 @@ var testInputs = []string{
 	strings.Repeat("a", 100),
 	strings.Repeat("ab", 50),
 	strings.Repeat("x", 1000),
+	// Invalid UTF-8: regexp decodes each bad byte as one U+FFFD rune (so "."
+	// and ".+" match it). Generated matchers must agree byte-for-byte.
+	"\xff", "a\xffb", "\xed\xa0\x80", "abc\x80", "\xc3", "caf\xc3",
+	"\xef\xbf\xbd", // valid encoding of U+FFFD itself
 }
 
 // anchoredRegexp returns a compiled regexp that does full-string matching.

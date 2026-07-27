@@ -1,14 +1,14 @@
 package dfa
 
 import (
+	"github.com/stretchr/testify/require"
 	"regexp/syntax"
 	"testing"
-	"github.com/wow-look-at-my/testify/require"
 )
 
 var benchPatterns = []struct {
-	name	string
-	pattern	string
+	name    string
+	pattern string
 }{
 	{"literal", "abc"},
 	{"char_class", "[a-z]+"},
@@ -22,6 +22,10 @@ var benchPatterns = []struct {
 	{"complex_alt", "(a|b)*abb"},
 	{"hex_color", `#[0-9a-f]{6}`},
 	{"nested_quant", "(ab?c)+"},
+	// Subset-construction state blowup: the DFA for (a|b)*a(a|b){k} needs
+	// ~2^(k+1) states. Exercises builder scaling on 1000+ state DFAs.
+	{"state_blowup", "(a|b)*a(a|b){9}"},
+	{"long_literal", "abcdefghijklmnopqrstuvwxyz0123456789"},
 }
 
 func compileProg(b *testing.B, pattern string) *syntax.Prog {

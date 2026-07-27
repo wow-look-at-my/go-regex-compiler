@@ -34,7 +34,34 @@ go-regex-compiler --regex 'pattern' [flags]
 
 - **full** -- matches the entire string against the pattern
 - **prefix** -- matches if the string starts with the pattern
-- **contains** -- matches if any substring matches the pattern
+- **contains** -- matches if any substring matches the pattern. Compiled as a
+  single-pass unanchored search DFA (O(n) regardless of pattern shape); a
+  pattern that is one exact literal compiles to a `strings.Contains` call.
+
+### Empty-width assertions
+
+A DFA cannot inspect the characters around a boundary, so `^`, `$`, `\A`,
+`\z`, `\b`, and `\B` are only accepted where they are provably **always
+satisfied** for the chosen `--match` mode; anything else is rejected with an
+error explaining the construct (older versions silently ignored assertions
+and generated wrong matchers, e.g. `foo\bbar` full-matched `"foobar"`):
+
+- `^` / `\A` (and `(?m)^`) -- allowed at the start of the pattern in `full`
+  and `prefix` modes, which are start-anchored anyway. Rejected mid-pattern
+  and in `contains` mode.
+- `$` / `\z` (and `(?m)$`) -- allowed at the end of the pattern in `full`
+  mode. Rejected mid-pattern and in `prefix`/`contains` modes (a match may
+  end before the input does).
+- `\b` / `\B` -- allowed only where every possible neighboring-character
+  combination satisfies the assertion, e.g. `\bfoo...` or `...foo\b` in
+  `full` mode (text edge on one side, word characters on the other).
+  Rejected otherwise (`foo\bbar`, or `\berror` in `contains` mode, where the
+  character before the match is unknown).
+
+The `--submatch` functions honor the same assertion validation as the bool
+matcher: a provably-always-true `\b`/`\B` (including an interior one, like `\B`
+between two word chars) folds away to a no-op, and any assertion the compiled
+matcher cannot evaluate is rejected rather than silently mishandled.
 
 ## Examples
 
@@ -64,7 +91,30 @@ The generated `ExtractDate` function returns `[]string` where index 0 is the ful
 ### Capture groups
 
 When `--submatch` is set, the generator emits a small family of functions that
-mirror the `regexp` API and share a single Thompson NFA core:
+mirror the `regexp` API. The core `<func>Index` is **compiled directly to a
+`switch state` automaton** whenever the pattern is *one-pass* (the next input
+rune always determines the next step unambiguously): capture-group byte offsets
+are written inline (`caps[k] = pos`) on the transitions that cross a group
+boundary, with **no** instruction table, thread list, or epsilon-closure at run
+time — the automaton *is* the Go control flow, allocating only the result slice
+and beating stdlib `regexp` on the match path. Text anchors (`^ $ \A \z`) and
+word boundaries (`\b \B`) compile too — start/end ones as cheap boundary gates,
+and a provably-always-true interior `\b`/`\B` folds to a no-op. The minority of
+patterns with genuine capture ambiguity compile instead to a tagged-DFA register
+machine — still a straight-line `switch state` machine, with no interpreter.
+
+`--submatch` requires `--match full`: the submatch functions extract groups from
+a full-string match, so combining them with prefix/contains matching would be
+self-contradictory (the bool matcher could say true while the extractor returns
+`nil`). If the regex has no capture groups, `--submatch` is ignored and a
+one-line note is printed to stderr.
+
+Case-insensitive patterns work throughout: the full Unicode simple-fold orbit
+of every case-folded literal and class is honored (`(?i)k` matches `k`, `K`,
+and `U+212A KELVIN SIGN`), in the bool matcher and the compiled submatch
+automata alike.
+
+The family:
 
 - **`<func>(input string) []string`** (default `FindSubmatch`) — positional
   extraction. Index 0 is the whole match, indices 1..N are the groups. A group
@@ -127,7 +177,18 @@ skipped and a one-line note is printed to stderr.
 2. **Build DFA** -- the NFA is converted to a DFA via subset construction
 3. **Generate code** -- the DFA is emitted as a Go function with a switch-based state machine
 
-For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`. Submatch extraction uses a Thompson NFA simulation with capture tracking, gated behind the DFA match for fast rejection. The simulation preserves thread priority (leftmost-first, matching Go's default `regexp` engine — not POSIX leftmost-longest) and evaluates empty-width assertions (`^`, `$`, `\b`, `\B`, `\A`, `\z`) inline against the surrounding runes, so internal assertions affect capture positions exactly as stdlib does. The submatch functions are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential test corpus (see `e2e/submatch_parity_test.go`).
+For ASCII-only patterns, the generated code operates on bytes directly. For Unicode patterns, it uses `utf8.DecodeRuneInString`; invalid UTF-8 is handled exactly like `regexp` (each bad byte is matched as one U+FFFD rune).
+
+Submatch extraction has two compiled paths and **no run-time interpreter**. **One-pass patterns are compiled**: the `<func>Index` core is the same `switch state` DFA the bool matcher emits, extended so each transition that crosses a capture boundary writes the current byte offset into a register (`caps[k] = pos`), and the accept state builds the `[]int` result straight from those registers. There is no NFA program, no thread list, no epsilon-closure, and no `sync.Pool` — a call is a single left-to-right pass with one allocation (the result), so it runs faster than stdlib's onepass interpreter. Empty-width assertions are handled inline: text anchors (`^`, `$`, `\A`, `\z`) fold away as always-satisfied for a full match, a leading/trailing word boundary (`\b`, `\B`) becomes a one-line gate on the first/last rune, and a provably-always-true *interior* `\b`/`\B` (one the validator has proven always holds, e.g. `\B` between two word chars) folds to a no-op — so `(a\Bb)` compiles exactly like `(ab)`. Patterns that are **not** one-pass — genuine capture ambiguity like adjacent stars `(a*)(a*)` or overlapping alternation `(a|ab)(a*)`, `(?i)` fold classes, and ambiguous bodies carrying an always-true interior `\b`/`\B` like `(\w+\B\w+)` — compile instead to a **tagged-DFA register machine**: the marker-annotated NFA is determinized so each live thread owns an isolated block of an integer register file, transitions carry fixed set/copy register ops, and leftmost-greedy priority (matching Go's default `regexp` engine — not POSIX leftmost-longest) resolves every ambiguity at construction time. It too is a straight-line `switch state` machine — no program table, thread list, epsilon-closure, or `sync.Pool`. When neither path can compile a pattern (an interior *text*-anchor assertion, or DFA state explosion), the generator returns a clean error rather than emit a walker. Both paths are verified byte-for-byte against `regexp.FindStringSubmatch`/`FindStringSubmatchIndex` over a differential parity + fuzz corpus (see `e2e/submatch_parity_test.go`, `e2e/submatch_fuzz_test.go`).
+
+Correctness is enforced differentially: alongside the hand-written e2e cases,
+a deterministic fuzz corpus (`e2e/fuzz_diff_test.go`, generated by
+`go generate ./e2e/...`) compares every generated matcher — 40 directed
+patterns targeting historical bug classes plus 50 fixed-seed random patterns,
+in all three match modes — against stdlib `regexp` over thousands of inputs,
+including invalid UTF-8. Assertion placements the validator rejects are pinned
+as rejected: a pattern either compiles and agrees with `regexp`, or fails
+generation with a descriptive error — never a silently wrong matcher.
 
 ## Benchmarks
 

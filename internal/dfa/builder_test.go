@@ -4,8 +4,8 @@ import (
 	"regexp/syntax"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func parse(t *testing.T, pattern string) *syntax.Prog {
@@ -122,23 +122,32 @@ func TestBuildCaseInsensitive(t *testing.T) {
 	assert.Equal(t, 1, countAccepting(d), "exactly one accepting state")
 }
 
-func TestEpsilonClosure(t *testing.T) {
-	prog := parse(t, "a")
-	b := &builder{
-		prog:		prog,
-		stateMap:	make(map[string]int),
-	}
+func TestExpandFoldCaseNoCap(t *testing.T) {
+	// U+212A (KELVIN SIGN) sits at offset 0x12A (> 256) from U+2000; its fold
+	// orbit {k, K} must not be dropped by any per-range expansion cap.
+	got := ExpandFoldCase([]rune{0x2000, 0x2200})
+	assert.True(t, rangesContain(got, 'k'), "fold expansion must include 'k' (fold of U+212A)")
+	assert.True(t, rangesContain(got, 'K'), "fold expansion must include 'K' (fold of U+212A)")
+	assert.True(t, rangesContain(got, 0x2100), "original range must be preserved")
 
-	closure := b.epsilonClosure([]int{prog.Start})
-	assert.NotEmpty(t, closure, "epsilon closure of start state should not be empty")
-	assert.Contains(t, closure, prog.Start, "epsilon closure should contain start state")
+	// A range entirely outside the foldable band expands to itself.
+	assert.Equal(t, []rune{0x30000, 0x30010}, ExpandFoldCase([]rune{0x30000, 0x30010}))
+}
+
+func rangesContain(pairs []rune, r rune) bool {
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if r >= pairs[i] && r <= pairs[i+1] {
+			return true
+		}
+	}
+	return false
 }
 
 func TestMergeRuneRanges(t *testing.T) {
 	tests := []struct {
-		name	string
-		input	[]rune
-		expect	[]rune
+		name   string
+		input  []rune
+		expect []rune
 	}{
 		{"no overlap", []rune{'a', 'c', 'e', 'g'}, []rune{'a', 'c', 'e', 'g'}},
 		{"overlap", []rune{'a', 'd', 'c', 'f'}, []rune{'a', 'f'}},
@@ -152,5 +161,77 @@ func TestMergeRuneRanges(t *testing.T) {
 			result := mergeRuneRanges(tt.input)
 			assert.Equal(t, tt.expect, result)
 		})
+	}
+}
+
+// simulateSearch runs a search DFA (BuildSearch) over input the way the
+// generated contains-mode code does: transition on each rune, restart at the
+// start state when no transition matches, and report true as soon as an
+// accepting state is entered.
+func simulateSearch(d *DFA, input string) bool {
+	if d.States[d.Start].Accept {
+		return true
+	}
+	state := d.Start
+	for _, r := range input {
+		next := d.Start
+		for _, tr := range d.States[state].Transitions {
+			if tr.Lo <= r && r <= tr.Hi {
+				next = tr.Next
+				break
+			}
+		}
+		if d.States[next].Accept {
+			return true
+		}
+		state = next
+	}
+	return false
+}
+
+func TestBuildSearchSeedsStartEverywhere(t *testing.T) {
+	prog := parse(t, "aab")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	// The classic overlap case: the match at offset 1 starts inside the
+	// failed attempt at offset 0. A restart-on-failure scanner misses it;
+	// the search DFA must not.
+	assert.True(t, simulateSearch(d, "aaab"))
+	assert.True(t, simulateSearch(d, "aab"))
+	assert.True(t, simulateSearch(d, "xxaabyy"))
+	assert.False(t, simulateSearch(d, "aa"))
+	assert.False(t, simulateSearch(d, "ab"))
+	assert.False(t, simulateSearch(d, ""))
+}
+
+func TestBuildSearchUnanchoredScan(t *testing.T) {
+	prog := parse(t, "a*b")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	assert.True(t, simulateSearch(d, "b"))
+	assert.True(t, simulateSearch(d, "zzzaaabzzz"))
+	assert.False(t, simulateSearch(d, "aaaa"))
+	assert.False(t, simulateSearch(d, "zzz"))
+}
+
+func TestBuildSearchEmptyPattern(t *testing.T) {
+	prog := parse(t, "")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+	assert.True(t, d.States[d.Start].Accept, "empty pattern matches everywhere")
+}
+
+func TestBuildSearchOmitsRestartTransitions(t *testing.T) {
+	prog := parse(t, "abc")
+	d, err := BuildSearch(prog)
+	require.NoError(t, err)
+
+	for _, s := range d.States {
+		for _, tr := range s.Transitions {
+			assert.NotEqual(t, d.Start, tr.Next,
+				"transitions back to the start state must be omitted (state %d)", s.ID)
+		}
 	}
 }
