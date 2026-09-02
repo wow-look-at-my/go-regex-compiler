@@ -516,6 +516,7 @@ func TestBuildSubmatchContext(t *testing.T) {
 	assert.Equal(t, 6, ctx.NumSlots)  // (+)*
 	assert.Equal(t, 3, ctx.NumGroups) // /
 
+
 	// This pattern is -pass, so the compiled automaton drives emission.
 	assert.True(t, ctx.Onepass, "expected one-pass compilation")
 	assert.NotEmpty(t, ctx.OPStates, "compiled path must have automaton states")
