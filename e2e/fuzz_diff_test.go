@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
@@ -133,9 +134,9 @@ func TestFuzzDifferentialSubmatch(t *testing.T) {
 // silently miscompiled and quietly dropped from coverage.
 func TestFuzzCorpusMatchesValidator(t *testing.T) {
 	require.NotEmpty(t, fuzzPatterns, "fuzz corpus is empty; run `go generate ./e2e/...`")
-	inCorpus := make(map[[2]string]bool, len(fuzzCorpus))
+	inCorpus := set.New[[2]string]()
 	for _, c := range fuzzCorpus {
-		inCorpus[[2]string{c.Pattern, c.Mode}] = true
+		inCorpus.Add([2]string{c.Pattern, c.Mode})
 	}
 
 	modes := []struct {
@@ -170,9 +171,8 @@ func TestFuzzCorpusMatchesValidator(t *testing.T) {
 			} else {
 				rejected++
 			}
-			assert.Equal(t, usable, inCorpus[[2]string{p, m.tag}],
-				"pattern %q mode %s: usable=%v but corpus presence=%v",
-				p, m.tag, usable, inCorpus[[2]string{p, m.tag}])
+			assert.Equal(t, usable, inCorpus.Contains([2]string{p, m.tag}), "pattern %q mode %s: usable=%v but corpus presence=%v",
+				p, m.tag, usable, inCorpus.Contains([2]string{p, m.tag}))
 		}
 	}
 	assert.Positive(t, accepted, "expected some accepted (pattern, mode) combos")

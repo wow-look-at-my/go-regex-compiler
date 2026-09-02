@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"unicode"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
@@ -339,7 +340,7 @@ func compressChains(ctx *templateContext) {
 		}
 	}
 
-	visited := make(map[int]bool)
+	visited := set.New[int]()
 	type chainInfo struct {
 		stateIDs   []int
 		terminalID int
@@ -349,7 +350,7 @@ func compressChains(ctx *templateContext) {
 	chainIdx := 0
 
 	for _, s := range ctx.States {
-		if visited[s.ID] {
+		if visited.Contains(s.ID) {
 			continue
 		}
 
@@ -371,11 +372,11 @@ func compressChains(ctx *templateContext) {
 		}
 
 		chain := []int{s.ID}
-		chainSet := map[int]bool{s.ID: true}
+		chainSet := set.Of[int](s.ID)
 		current := target
 
 		for {
-			if chainSet[current] {
+			if chainSet.Contains(current) {
 				break
 			}
 			cs := stateByID[current]
@@ -404,13 +405,13 @@ func compressChains(ctx *templateContext) {
 				break
 			}
 			chain = append(chain, current)
-			chainSet[current] = true
+			chainSet.Add(current)
 			current = nextTarget
 		}
 
 		if len(chain) >= minChainLength {
 			for _, id := range chain {
-				visited[id] = true
+				visited.Add(id)
 			}
 			chains = append(chains, chainInfo{
 				stateIDs:   chain,
@@ -425,7 +426,7 @@ func compressChains(ctx *templateContext) {
 		return
 	}
 
-	chainMembers := make(map[int]bool)
+	chainMembers := set.New[int]()
 	for _, c := range chains {
 		for i := range ctx.States {
 			if ctx.States[i].ID == c.stateIDs[0] {
@@ -437,13 +438,13 @@ func compressChains(ctx *templateContext) {
 			}
 		}
 		for _, id := range c.stateIDs[1:] {
-			chainMembers[id] = true
+			chainMembers.Add(id)
 		}
 	}
 
 	var filtered []templateState
 	for _, s := range ctx.States {
-		if !chainMembers[s.ID] {
+		if !chainMembers.Contains(s.ID) {
 			filtered = append(filtered, s)
 		}
 	}
@@ -451,7 +452,7 @@ func compressChains(ctx *templateContext) {
 
 	var newAcceptIDs []int
 	for _, id := range ctx.AcceptIDs {
-		if !chainMembers[id] {
+		if !chainMembers.Contains(id) {
 			newAcceptIDs = append(newAcceptIDs, id)
 		}
 	}
