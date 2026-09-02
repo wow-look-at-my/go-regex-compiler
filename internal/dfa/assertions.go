@@ -30,10 +30,24 @@ func ValidateAssertions(prog *syntax.Prog, anchorStart, anchorEnd bool) error {
 	return v.validate()
 }
 
+// ValidateAssertionsForBoolMatcher is ValidateAssertions for a caller building
+// through Build/BuildSearch, which decide \b and \B from the state they carry
+// instead of assuming them. Only text anchors are checked, so `\berror`
+// compiles in contains mode.
+//
+// The submatch compilers keep the strict entry point: their closures walk an
+// always-true assertion through as a no-op, which is sound only because
+// ValidateAssertions proved it always holds.
+func ValidateAssertionsForBoolMatcher(prog *syntax.Prog, anchorStart, anchorEnd bool) error {
+	v := &validator{prog: prog, anchorStart: anchorStart, anchorEnd: anchorEnd, skipWordBoundary: true}
+	return v.validate()
+}
+
 type validator struct {
-	prog        *syntax.Prog
-	anchorStart bool
-	anchorEnd   bool
+	prog             *syntax.Prog
+	anchorStart      bool
+	anchorEnd        bool
+	skipWordBoundary bool // the caller's DFA decides \b itself
 
 	reachable      []bool // reachable from prog.Start (crossing consumes)
 	consumedBefore []bool // reachable from prog.Start only after >=1 consumed rune
@@ -134,7 +148,7 @@ func (v *validator) checkAssertion(pc int, op syntax.EmptyOp) error {
 			return fmt.Errorf("regex anchors to the end of the text with %s, which %s mode cannot honor (a match may end before the input does); use --match full or drop the anchor", name, v.modeName())
 		}
 	}
-	if op&(syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 {
+	if op&(syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 && !v.skipWordBoundary {
 		before := v.beforeClass(pc)
 		after := v.afterClass(pc)
 		ok := false

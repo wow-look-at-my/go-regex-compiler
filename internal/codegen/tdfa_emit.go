@@ -8,6 +8,7 @@ package codegen
 // register writes; there is no interpreter.
 
 import (
+	"github.com/wow-look-at-my/go-containers/set"
 	"sort"
 	"strconv"
 	"strings"
@@ -128,14 +129,14 @@ func tdTransBody(tr tdTrans, ns int, posExpr string) (string, bool) {
 	type copyOp struct{ dst, src int }
 	var sets []int
 	var copies []copyOp
-	written := map[int]bool{}
+	written := set.New[int]()
 
 	for k, f := range tr.fills {
 		for t := 2; t < ns; t++ {
 			dst := k*ns + t
 			if f.crossed[t] {
 				sets = append(sets, dst)
-				written[dst] = true
+				written.Add(dst)
 				continue
 			}
 			src := f.src*ns + t
@@ -143,7 +144,7 @@ func tdTransBody(tr tdTrans, ns int, posExpr string) (string, bool) {
 				continue // identity copy: value already in place
 			}
 			copies = append(copies, copyOp{dst: dst, src: src})
-			written[dst] = true
+			written.Add(dst)
 		}
 	}
 
@@ -152,7 +153,7 @@ func tdTransBody(tr tdTrans, ns int, posExpr string) (string, bool) {
 	snap := map[int]string{}
 	var snapOrder []int
 	for _, c := range copies {
-		if written[c.src] {
+		if written.Contains(c.src) {
 			if _, ok := snap[c.src]; !ok {
 				snap[c.src] = "t" + strconv.Itoa(len(snapOrder))
 				snapOrder = append(snapOrder, c.src)

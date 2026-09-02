@@ -175,16 +175,27 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		Start:       d.Start,
 	}
 
+	// A full match asks whether a match ends WITH THE INPUT; prefix and contains
+	// ask whether one ended on the way into this state. These differ only under
+	// a word boundary, where a trailing \b is decided by the following
+	// character.
+	accepts := func(s *dfa.State) bool {
+		if opts.Mode == MatchFull {
+			return s.AcceptAtEnd
+		}
+		return s.Accept
+	}
+
 	ctx.acceptSet = make(map[int]bool)
 	for _, s := range d.States {
-		ts := templateState{ID: s.ID, Accept: s.Accept}
+		ts := templateState{ID: s.ID, Accept: accepts(s)}
 		for _, tr := range s.Transitions {
 			ts.Transitions = append(ts.Transitions, templateTransition{
 				Lo: tr.Lo, Hi: tr.Hi, Next: tr.Next,
 			})
 		}
 		ctx.States = append(ctx.States, ts)
-		if s.Accept {
+		if accepts(s) {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
 			ctx.acceptSet[s.ID] = true
 		}
@@ -192,7 +203,7 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 
 	// Edge case: single accepting start state with no transitions (matches only empty string)
 	if len(d.States) > 0 {
-		startAccepts := d.States[d.Start].Accept
+		startAccepts := accepts(d.States[d.Start])
 		ctx.StartAccepts = startAccepts
 		if len(d.States) == 1 && startAccepts && len(d.States[0].Transitions) == 0 {
 			ctx.EdgeCase = true

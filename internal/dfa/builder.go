@@ -46,6 +46,11 @@ type builder struct {
 	search   bool  // seed the start closure into every state (unanchored search)
 	startSet []int // epsilon closure of prog.Start
 
+	// Word-boundary construction only (see wordboundary.go): states hold the
+	// NFA set before closure, plus the class of the character that preceded it.
+	startPending []int
+	prevWord     []bool
+
 	// Scratch state for epsilonClosure, reused across calls: visited[pc] holds
 	// the generation of the last closure that reached pc.
 	visited []int
@@ -54,6 +59,9 @@ type builder struct {
 }
 
 func (b *builder) build() (*DFA, error) {
+	if hasWordBoundary(b.prog) {
+		return b.buildWordAware()
+	}
 	b.startSet = b.epsilonClosure([]int{b.prog.Start})
 	b.getOrCreateState(b.startSet)
 	b.dfa.Start = 0
@@ -330,8 +338,9 @@ func (b *builder) getOrCreateState(nfaStates []int) int {
 	}
 
 	b.dfa.States = append(b.dfa.States, &State{
-		ID:     id,
-		Accept: accept,
+		ID:          id,
+		Accept:      accept,
+		AcceptAtEnd: accept,
 	})
 	return id
 }

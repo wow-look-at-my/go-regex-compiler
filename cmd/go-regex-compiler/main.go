@@ -103,8 +103,16 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	case codegen.MatchContains:
 		anchorStart, anchorEnd = false, false
 	}
-	if err := dfa.ValidateAssertions(result.Prog, anchorStart, anchorEnd); err != nil {
+	// The bool matcher decides \b and \B from the state it carries, so only the
+	// text anchors need proving here. --submatch keeps the strict check below,
+	// because its compilers do walk an always-true assertion through.
+	if err := dfa.ValidateAssertionsForBoolMatcher(result.Prog, anchorStart, anchorEnd); err != nil {
 		return err
+	}
+	if submatch {
+		if err := dfa.ValidateAssertions(result.Prog, anchorStart, anchorEnd); err != nil {
+			return err
+		}
 	}
 
 	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search

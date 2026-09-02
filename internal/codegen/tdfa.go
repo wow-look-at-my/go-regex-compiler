@@ -30,6 +30,7 @@ package codegen
 //     winner; its register block is read out as the capture offsets.
 
 import (
+	"github.com/wow-look-at-my/go-containers/set"
 	"regexp/syntax"
 	"sort"
 	"strconv"
@@ -296,15 +297,15 @@ func tdCollectBounds(prog *syntax.Prog, pcs []int) []tdInterval {
 	if len(ivs) == 0 {
 		return nil
 	}
-	edges := map[rune]bool{}
+	edges := set.New[rune]()
 	for _, iv := range ivs {
-		edges[iv.lo] = true
+		edges.Add(iv.lo)
 		if iv.hi+1 <= 0x10FFFF {
-			edges[iv.hi+1] = true
+			edges.Add(iv.hi + 1)
 		}
 	}
-	cuts := make([]rune, 0, len(edges))
-	for e := range edges {
+	cuts := make([]rune, 0, edges.Len())
+	for e := range edges.All() {
 		cuts = append(cuts, e)
 	}
 	sort.Slice(cuts, func(i, j int) bool { return cuts[i] < cuts[j] })
@@ -363,11 +364,11 @@ func tdClassIntervals(prog *syntax.Prog, pc int) []tdInterval {
 // concrete intervals, exactly as regexp does for (?i): every base rune plus each
 // of its SimpleFold orbit members. Merges adjacent runes into ranges.
 func tdFoldIntervals(rs []rune) []tdInterval {
-	seen := map[rune]bool{}
+	seen := set.New[rune]()
 	add := func(r rune) {
-		seen[r] = true
+		seen.Add(r)
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			seen[f] = true
+			seen.Add(f)
 		}
 	}
 	for i := 0; i+1 < len(rs); i += 2 {
@@ -378,8 +379,8 @@ func tdFoldIntervals(rs []rune) []tdInterval {
 	if len(rs)%2 == 1 {
 		add(rs[len(rs)-1])
 	}
-	all := make([]rune, 0, len(seen))
-	for r := range seen {
+	all := make([]rune, 0, seen.Len())
+	for r := range seen.All() {
 		all = append(all, r)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
