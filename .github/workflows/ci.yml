@@ -24,10 +24,5 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@master
         with:
           generate: 44e1d2620691
-          # One Cosmopolitan fat APE covers the linux/{amd64,arm64} and
-          # windows/amd64 release slots; darwin/arm64, darwin/amd64 and
-          # windows/arm64 stay native builds (darwin/arm64 deliberately so:
-          # the go-toolchain pipeline wedges under the APE on macOS -- see
-          # the go-toolchain pipeline wedges under the APE on macOS, so macs
-          # are served native binaries).
+          # The APE covers linux and windows/amd64; darwin stays native, since the pipeline wedges under it on macOS.
           targets: 'cosmo,darwin/amd64,darwin/arm64,windows/arm64'
