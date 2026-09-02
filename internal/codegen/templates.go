@@ -7,7 +7,7 @@ import (
 
 var tmpl = template.Must(template.New("").Funcs(funcMap).Parse(allTemplates))
 
-// goString emits a Go double-quoted string literal for s.
+// goString emits a Go -quoted string literal for s.
 func goString(s string) string { return strconv.Quote(s) }
 
 var funcMap = template.FuncMap{
@@ -47,14 +47,13 @@ const allTemplates = headerTemplate +
 	utf8SearchLoopTemplate +
 	statesTemplate +
 	acceptCheckTemplate +
+	endAcceptCheckTemplate +
 	submatchFuncTemplate +
 	submatchStringFuncTemplate +
 	submatchNamesFuncTemplate +
 	submatchStructFuncTemplate +
 	onepassIndexFuncTemplate +
 	tdfaIndexFuncTemplate
-
-// ---------- header ----------
 
 const headerTemplate = `
 {{- define "header" -}}
@@ -74,8 +73,6 @@ import "unicode/utf8"
 {{ end }}
 {{ end -}}
 `
-
-// ---------- match function ----------
 
 const matchFuncTemplate = `
 {{- define "matchFunc" -}}
@@ -108,8 +105,6 @@ const edgeCaseEmptyTemplate = `
 
 const edgeCaseEmptyMatchTemplate = "" // placeholder for future use
 
-// ---------- full match body ----------
-
 const fullBodyTemplate = `
 {{- define "fullBody" }}
 	state := {{ .Start }}
@@ -125,16 +120,6 @@ const fullBodyTemplate = `
 {{- end -}}
 `
 
-// ---------- prefix body ----------
-//
-// Prefix mode returns true the moment ANY accepting state is entered: a match
-// found mid-input proves some prefix matches, even if the DFA later dies. (The
-// old shape — run until dead and test the final state — missed matches that
-// passed THROUGH an accepting state, e.g. `a(bc)?` against "abx".) Accepting
-// states are unreachable under this scheme, so the loop only ever holds
-// non-accepting states, and running out of input or transitions means no
-// prefix matched.
-
 const prefixBodyTemplate = `
 {{- define "prefixBody" }}
 {{- if .StartAccepts }}
@@ -149,20 +134,10 @@ const prefixBodyTemplate = `
 {{- else -}}
 {{ template "utf8Loop" . }}
 {{- end }}
-	return false
+{{ template "endAcceptCheck" . }}
 {{- end }}
 {{- end -}}
 `
-
-// ---------- contains body ----------
-//
-// Contains mode runs a SEARCH DFA (dfa.BuildSearch): the start closure is
-// folded into every state, so one left-to-right pass tracks every possible
-// match start simultaneously. Entering an accepting state proves a substring
-// match (EarlyAccept renders those transitions as "return true"), and a rune
-// with no transition simply restarts at the start state -- the builder omits
-// those edges and the switch default handles them. This replaces the old
-// O(n^2) restart-the-DFA-at-every-position loop with a single O(n) scan.
 
 const containsBodyTemplate = `
 {{- define "containsBody" }}
@@ -180,12 +155,10 @@ const containsBodyTemplate = `
 {{- else -}}
 {{ template "utf8SearchLoop" . }}
 {{- end }}
-	return false
+{{ template "endAcceptCheck" . }}
 {{- end }}
 {{- end -}}
 `
-
-// ---------- loops ----------
 
 const asciiLoopTemplate = `
 {{- define "asciiLoop" }}
@@ -215,8 +188,6 @@ const utf8LoopTemplate = `
 	}
 {{- end -}}
 `
-
-// ---------- contains loops ----------
 
 const asciiSearchLoopTemplate = `
 {{- define "asciiSearchLoop" }}
@@ -257,11 +228,6 @@ const utf8SearchLoopTemplate = `
 {{- end -}}
 `
 
-// ---------- state switch cases ----------
-
-// statesInner handles full/prefix; statesContainsInner handles contains.
-// Byte vs rune condition and the no-match action are passed as parameters.
-
 const statesTemplate = `
 {{- define "statesASCII" }}{{ template "statesInner" (args . "byte" "return false") }}{{ end }}
 {{- define "statesRune" }}{{ template "statesInner" (args . "rune" "return false") }}{{ end }}
@@ -283,7 +249,22 @@ const statesTemplate = `
 {{- end -}}
 `
 
-// ---------- accept check ----------
+const endAcceptCheckTemplate = `
+{{- define "endAcceptCheck" -}}
+{{- if eq (len .EndAcceptIDs) 0 }}
+	return false
+{{- else if eq (len .EndAcceptIDs) 1 }}
+	return state == {{ index .EndAcceptIDs 0 }}
+{{- else }}
+	switch state {
+	case {{ range $i, $id := .EndAcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+		return true
+	default:
+		return false
+	}
+{{- end }}
+{{- end -}}
+`
 
 const acceptCheckTemplate = `
 {{- define "acceptCheck" -}}

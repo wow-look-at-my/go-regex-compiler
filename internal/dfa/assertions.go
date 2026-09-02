@@ -6,44 +6,32 @@ import (
 )
 
 // ValidateAssertions checks every reachable empty-width assertion (^, $, \A,
-// \z, \b, \B) in prog against what the generated DFA can actually evaluate.
-//
-// The subset construction follows InstEmptyWidth unconditionally, so an
-// assertion is only sound when it is provably ALWAYS satisfied at every point
-// it can be crossed during a match:
-//
-//   - \A / ^ hold when they can only be crossed before any rune is consumed
-//     and the match is anchored at the start (full/prefix mode).
-//   - \z / $ (and (?m)$) hold when nothing can be consumed between them and
-//     the match, and the match is anchored at the end (full mode).
-//   - \b / \B hold when the possible characters on both sides are known and
-//     every combination satisfies the assertion (e.g. \bfoo anchored at the
-//     start: begin-of-text on the left, a word rune on the right).
-//
-// Anything else used to be silently miscompiled (e.g. foo\bbar full-matched
-// "foobar"); it is now rejected with an error describing the construct.
-// anchorStart/anchorEnd say whether the surrounding match mode pins the
-// pattern to the text edges: full=(true,true), prefix=(true,false),
-// contains=(false,false).
 func ValidateAssertions(prog *syntax.Prog, anchorStart, anchorEnd bool) error {
 	v := &validator{prog: prog, anchorStart: anchorStart, anchorEnd: anchorEnd}
 	return v.validate()
 }
 
+// ValidateAssertionsForBoolMatcher is ValidateAssertions for a caller building
+func ValidateAssertionsForBoolMatcher(prog *syntax.Prog, anchorStart, anchorEnd bool) error {
+	v := &validator{prog: prog, anchorStart: anchorStart, anchorEnd: anchorEnd, skipWordBoundary: true}
+	return v.validate()
+}
+
 type validator struct {
-	prog        *syntax.Prog
-	anchorStart bool
-	anchorEnd   bool
+	prog             *syntax.Prog
+	anchorStart      bool
+	anchorEnd        bool
+	skipWordBoundary bool // the caller's DFA decides \b itself
 
 	reachable      []bool // reachable from prog.Start (crossing consumes)
-	consumedBefore []bool // reachable from prog.Start only after >=1 consumed rune
+	consumedBefore []bool // reachable from prog.Start only after >= consumed rune
 	canReachMatch  []bool // can reach an InstMatch (possibly consuming)
 	startEps       []bool // epsilon-reachable from prog.Start (no consumption)
 }
 
-// charClass describes what the characters on one side of a boundary can be.
+// charClass describes what the characters on side of a boundary can be.
 type charClass struct {
-	word    bool // a word character ([0-9A-Za-z_]) is possible
+	word    bool // a word character ([-9A-Za-z_]) is possible
 	nonword bool // a non-word character (or text edge) is possible
 	unknown bool // unanchored text edge: could be anything
 }
@@ -59,7 +47,7 @@ func (v *validator) validate() error {
 	v.reachable = v.fullReach([]int{v.prog.Start})
 	v.startEps = v.epsReach([]int{v.prog.Start})
 
-	// Everything downstream of a reachable rune instruction has consumed >= 1.
+	// Everything downstream of a reachable rune instruction has consumed >=.
 	var consumeSeeds []int
 	for pc := 0; pc < n; pc++ {
 		if v.reachable[pc] && isRuneInst(v.prog.Inst[pc].Op) {
@@ -134,13 +122,12 @@ func (v *validator) checkAssertion(pc int, op syntax.EmptyOp) error {
 			return fmt.Errorf("regex anchors to the end of the text with %s, which %s mode cannot honor (a match may end before the input does); use --match full or drop the anchor", name, v.modeName())
 		}
 	}
-	if op&(syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 {
+	if op&(syntax.EmptyWordBoundary|syntax.EmptyNoWordBoundary) != 0 && !v.skipWordBoundary {
 		before := v.beforeClass(pc)
 		after := v.afterClass(pc)
 		ok := false
 		if before.empty() || after.empty() {
-			// The assertion can never be crossed on a path that both consumes
-			// and matches; it cannot affect any real match.
+			// The assertion can never be crossed on a path that consumes
 			ok = true
 		} else if op&syntax.EmptyWordBoundary != 0 {
 			ok = (before.pureWord() && after.pureNonword()) || (before.pureNonword() && after.pureWord())
@@ -159,12 +146,10 @@ func (v *validator) checkAssertion(pc int, op syntax.EmptyOp) error {
 }
 
 // beforeClass computes the possible characters immediately before the
-// boundary at which the assertion pc is evaluated.
 func (v *validator) beforeClass(pc int) charClass {
 	var c charClass
 	if v.startEps[pc] {
 		// Crossed before consuming anything: the previous "character" is the
-		// start of the match window.
 		if v.anchorStart {
 			c.nonword = true // begin-of-text counts as a non-word character
 		} else {
@@ -184,7 +169,6 @@ func (v *validator) beforeClass(pc int) charClass {
 }
 
 // afterClass computes the possible characters immediately after the boundary
-// at which the assertion pc is evaluated.
 func (v *validator) afterClass(pc int) charClass {
 	var c charClass
 	eps := v.epsReach([]int{int(v.prog.Inst[pc].Out)})
@@ -207,7 +191,6 @@ func (v *validator) afterClass(pc int) charClass {
 }
 
 // consumesAfter reports whether, after crossing the assertion at pc, the
-// pattern can consume at least one more rune and still reach a match.
 func (v *validator) consumesAfter(pc int) bool {
 	reach := v.fullReach([]int{int(v.prog.Inst[pc].Out)})
 	for rp := 0; rp < len(v.prog.Inst); rp++ {
@@ -227,7 +210,6 @@ func (c charClass) merge(o charClass) charClass {
 }
 
 // runeInstClass classifies which kinds of characters a rune instruction can
-// consume, including case-folded equivalents.
 func runeInstClass(inst *syntax.Inst) charClass {
 	if inst.Op == syntax.InstRuneAny || inst.Op == syntax.InstRuneAnyNotNL {
 		return charClass{word: true, nonword: true}
@@ -243,13 +225,13 @@ func runeInstClass(inst *syntax.Inst) charClass {
 	return c
 }
 
-// wordRanges are the \b word characters ([0-9A-Za-z_]), as inclusive ranges.
+// wordRanges are the \b word characters ([-9A-Za-z_]), as inclusive ranges.
 var wordRanges = [][2]rune{{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}}
 
 // rangeClass reports whether [lo, hi] contains word and/or non-word characters.
 func rangeClass(lo, hi rune) charClass {
 	var c charClass
-	covered := lo // first rune not yet known to be word
+	covered := lo // rune not yet known to be word
 	for _, wr := range wordRanges {
 		if lo <= wr[1] && hi >= wr[0] {
 			c.word = true
@@ -268,13 +250,11 @@ func rangeClass(lo, hi rune) charClass {
 }
 
 // fullReach returns which instructions are reachable from seeds, crossing
-// rune instructions (i.e. allowing consumption).
 func (v *validator) fullReach(seeds []int) []bool {
 	return v.reach(seeds, true)
 }
 
 // epsReach returns which instructions are reachable from seeds WITHOUT
-// consuming: rune instructions are marked but not crossed.
 func (v *validator) epsReach(seeds []int) []bool {
 	return v.reach(seeds, false)
 }
