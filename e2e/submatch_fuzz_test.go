@@ -9,7 +9,6 @@ import (
 )
 
 // fuzzCase pairs a generated submatch-index matcher with its source pattern and
-// the alphabet random inputs are drawn from.
 type fuzzCase struct {
 	pattern string
 	indexFn func(string) []int
@@ -17,9 +16,6 @@ type fuzzCase struct {
 }
 
 // fuzzCases covers the ambiguous constructs that exercise the TDFA register
-// machine's disambiguation and register copies, plus a couple of realistic
-// patterns. The alphabet is kept tight per pattern so random inputs actually
-// stress the interesting boundaries (adjacent stars, overlapping alternation).
 func fuzzCases() []fuzzCase {
 	return []fuzzCase{
 		{`(a*)(a*)`, FindStarStarIndex, "ab"},
@@ -34,7 +30,6 @@ func fuzzCases() []fuzzCase {
 		{`(\w+)(\w*)`, FindWordsSubIndex, "a1_ "},
 
 		// Interior always-true \B: folds to a no-op, so parity must hold under
-		// random input just like the equivalent assertion-free pattern.
 		{`(a\Bb)`, FindNegWBabIndex, "ab"},
 		{`(foo\Bbar)`, FindNegWBFoobarIndex, "fobar"},
 		{`(foo\B)(bar)`, FindNegWBFooBarIndex, "fobar"},
@@ -45,10 +40,6 @@ func fuzzCases() []fuzzCase {
 }
 
 // TestSubmatchDifferentialFuzz is the primary safety net: for each pattern it
-// compares the generated FindXxxIndex against stdlib
-// regexp.FindStringSubmatchIndex byte-for-byte over many random inputs
-// (adversarial repetition, the empty string, and no-match inputs included). The
-// seed is fixed so CI is deterministic.
 func TestSubmatchDifferentialFuzz(t *testing.T) {
 	for _, c := range fuzzCases() {
 		c := c
@@ -63,13 +54,12 @@ func TestSubmatchDifferentialFuzz(t *testing.T) {
 				require.Equal(t, want, got, "pattern %q input %q", c.pattern, in)
 			}
 
-			// The empty string and every single character.
+			// The empty string and every character.
 			check("")
 			for _, r := range alpha {
 				check(string(r))
 			}
-			// 40k random inputs up to length 12, biased toward runs that expose
-			// star/alternation ambiguity.
+			// 40k random inputs up to length, biased toward runs that expose
 			for iter := 0; iter < 40000; iter++ {
 				n := rng.Intn(13)
 				b := make([]rune, n)

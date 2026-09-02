@@ -1,34 +1,5 @@
 package codegen
 
-// This file builds a tagged DFA (TDFA) capture automaton from a Thompson NFA
-// program. It is the generalization of the one-pass builder (onepass.go): where
-// one-pass requires every input rune to select a unique next instruction, the
-// TDFA determinizes patterns with genuine capture AMBIGUITY (e.g. `(a*)(a*)`,
-// `(a|ab)(a*)`, `(?i)abc`) into a plain `switch state` machine with fixed
-// register operations on every transition and NO run-time interpreter (no
-// program table, no live-position list, no object pool).
-//
-// Mechanics (this construction is a tagged-DFA / TDFA in the literature):
-//
-//   - A "capture slot" is an int holding a group boundary's byte offset (slot
-//     2*g is group g's start, 2*g+1 its end). Slots 0/1 are the whole match.
-//   - Each DFA state is an ordered list of NFA positions ("configs"). The order
-//     is leftmost-greedy priority: exactly the thread priority Go's regexp uses
-//     (earlier alternative first, greedy repeat prefers to continue). Two paths
-//     reaching the same NFA position merge at construction time — the higher
-//     priority one wins — so no disambiguation happens at run time.
-//   - Registers: a flat file of ints. Config at position k in a state owns the
-//     register block [k*numSlots, k*numSlots+numSlots); register (k,slot) holds
-//     that config's byte offset for the slot, or -1 if the slot is unset on the
-//     config's path. Isolating each config's slots in its own block is what lets
-//     a losing branch keep provisional offsets without corrupting the winner and
-//     lets a non-participating group stay -1.
-//   - On a transition, each target config either copies a slot from its source
-//     config's block or, when a group boundary is crossed on the epsilon path,
-//     sets it to the post-consume byte position. These are fixed per transition.
-//   - At end of input the accepting state's highest-priority match config is the
-//     winner; its register block is read out as the capture offsets.
-
 import (
 	"github.com/wow-look-at-my/go-containers/set"
 	"regexp/syntax"
@@ -39,7 +10,6 @@ import (
 )
 
 // tdMaxStates / tdMaxConfigs bound the construction; past them buildTDFA gives
-// up (the caller then errors, never falling back to an interpreter).
 const (
 	tdMaxStates  = 20000
 	tdMaxConfigs = 64
@@ -48,26 +18,20 @@ const (
 // tdInterval is an inclusive [lo,hi] rune range.
 type tdInterval struct{ lo, hi rune }
 
-// tdFill describes how one target config's register block is filled on a
-// transition: crossed[slot] true => set the slot to the post-consume position;
-// false => copy the slot from source-config block src.
+// tdFill describes how target config's register block is filled on a
 type tdFill struct {
 	src     int
 	crossed []bool // len numSlots
 }
 
-// tdTrans is one transition: on a rune in [lo,hi], move to state next and fill
-// its register blocks per fills (one tdFill per target config).
+// tdTrans is transition: on a rune in [lo,hi], move to state next and fill
 type tdTrans struct {
 	lo, hi rune
 	next   int
 	fills  []tdFill
 }
 
-// tdState is one TDFA state: an ordered (priority) list of NFA pcs plus its
-// transitions. accept/winner are set if the state contains a match config; the
-// winner is the position of the highest-priority match config, whose register
-// block holds the capture offsets to read at accept.
+// tdState is TDFA state: an ordered (priority) list of NFA pcs plus its
 type tdState struct {
 	id     int
 	pcs    []int
@@ -82,13 +46,11 @@ type tdfaAutomaton struct {
 	start     int
 	numSlots  int
 	maxConfig int
-	startFill []tdFill // how to initialize the start state's registers at pos 0
+	startFill []tdFill // how to initialize the start state's registers at pos
 	ascii     bool
 }
 
 // tdConfig is a config produced by a closure: an NFA pc plus, relative to the
-// seed set, which slots were crossed on the epsilon path and which source
-// config it descends from.
 type tdConfig struct {
 	pc      int
 	crossed []bool
@@ -101,20 +63,9 @@ type tdSeed struct {
 	src int
 }
 
-// buildTDFA determinizes prog into a TDFA. numGroups excludes group 0. It
-// returns ok=false when the pattern carries a text-anchor assertion (^ $ \A \z
-// — the register construction evaluates epsilon paths with a fixed boundary
-// context and cannot honor those; the one-pass path handles the edge-anchored
-// cases, and interior ones error rather than miscompile) or exceeds the
-// state/config budget. A word-boundary assertion (\b/\B) is tolerated: any that
-// survives dfa.ValidateAssertions is provably always satisfied, so the closure
-// skips it as a no-op (see tdCloser.walk).
+// buildTDFA determinizes prog into a TDFA. numGroups excludes group. It
 func buildTDFA(prog *syntax.Prog, numGroups int) (*tdfaAutomaton, bool) {
 	// Reject text-anchor assertions; tolerate always-true word boundaries. The
-	// register construction below has no per-position boundary context, so a real
-	// ^ $ \A \z check cannot be compiled here. A \b/\B that reached codegen was
-	// admitted by dfa.ValidateAssertions ONLY because it always holds, making it a
-	// no-op the closure walks straight through.
 	for pc := range prog.Inst {
 		inst := &prog.Inst[pc]
 		if inst.Op == syntax.InstEmptyWidth &&
@@ -205,11 +156,6 @@ func tdFillsFrom(cfgs []tdConfig) []tdFill {
 }
 
 // tdClosure computes the priority-ordered, pc-deduped epsilon-closure over
-// multiple seeds. Seeds are processed in order (leftmost-greedy: earlier seed is
-// higher priority); within a seed, an alternation explores its high-priority
-// branch (Out) before its low-priority branch (Arg). The first path to reach a
-// pc wins its crossed-slot set and its source-config index, exactly matching
-// Go's leftmost-first NFA thread priority.
 func tdClosure(prog *syntax.Prog, numSlots int, seeds []tdSeed) []tdConfig {
 	c := &tdCloser{
 		prog:     prog,
@@ -250,8 +196,6 @@ func (c *tdCloser) walk(pc int) {
 			pc = int(inst.Out)
 		case syntax.InstEmptyWidth:
 			// Always-true \b/\B (buildTDFA rejected every other assertion): the
-			// assertion consumes nothing and never fails, so walk straight through
-			// it exactly like a Nop.
 			pc = int(inst.Out)
 		case syntax.InstCapture:
 			slot := int(inst.Arg)
@@ -284,8 +228,6 @@ func tdStateKey(cfgs []tdConfig) string {
 }
 
 // tdCollectBounds partitions the union of all consuming configs' rune classes
-// into disjoint intervals, so each interval selects a constant set of firing
-// configs (and thus one deterministic transition).
 func tdCollectBounds(prog *syntax.Prog, pcs []int) []tdInterval {
 	var ivs []tdInterval
 	for _, pc := range pcs {
@@ -361,8 +303,6 @@ func tdClassIntervals(prog *syntax.Prog, pc int) []tdInterval {
 }
 
 // tdFoldIntervals expands a rune class under Unicode simple case folding into
-// concrete intervals, exactly as regexp does for (?i): every base rune plus each
-// of its SimpleFold orbit members. Merges adjacent runes into ranges.
 func tdFoldIntervals(rs []rune) []tdInterval {
 	seen := set.New[rune]()
 	add := func(r rune) {
@@ -398,7 +338,6 @@ func tdFoldIntervals(rs []rune) []tdInterval {
 }
 
 // tdRuneMatch reports whether consuming instruction inst matches rune r
-// (expanding case folds for FoldCase classes).
 func tdRuneMatch(inst *syntax.Inst, r rune) bool {
 	switch inst.Op {
 	case syntax.InstRuneAny:
@@ -452,7 +391,6 @@ func tdRuneInFold(rs []rune, r rune) bool {
 }
 
 // tdIsASCII reports whether every transition's rune interval stays within ASCII,
-// so the generated matcher can use the byte fast path instead of decoding runes.
 func tdIsASCII(d *tdfaAutomaton, prog *syntax.Prog) bool {
 	for _, st := range d.states {
 		for _, tr := range st.trans {

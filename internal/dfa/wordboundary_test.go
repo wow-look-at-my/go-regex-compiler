@@ -9,8 +9,6 @@ import (
 )
 
 // simulate runs a built DFA over input and reports the verdict for the mode.
-// prefix and contains read Accept on entry; every mode reads AcceptAtEnd on the
-// state the input lands in.
 func simulate(d *DFA, input string, mode string) bool {
 	state := d.States[d.Start]
 	if mode != "full" && state.Accept {
@@ -37,7 +35,6 @@ func simulate(d *DFA, input string, mode string) bool {
 		}
 	}
 	// Every mode also asks the final state: a trailing \b can be satisfied by
-	// the end of the input, which leaves no rune to enter an accepting state on.
 	return state.AcceptAtEnd
 }
 
@@ -68,8 +65,6 @@ func buildFor(t *testing.T, pattern, mode string) *DFA {
 }
 
 // stdlib is the oracle. A word boundary is exactly the construct the DFA used
-// to refuse, so the only proof worth having is agreement with the engine that
-// already gets it right.
 func TestWordBoundaryAgreesWithStdlib(t *testing.T) {
 	patterns := []string{
 		`\bused to\b`,
@@ -109,8 +104,6 @@ func TestWordBoundaryAgreesWithStdlib(t *testing.T) {
 }
 
 // oracleFor expresses the mode as an anchoring stdlib understands. prefix has
-// no direct spelling, so it becomes "some prefix matches", which is what the
-// generated prefix matcher reports.
 func oracleFor(pattern, mode string) string {
 	switch mode {
 	case "full":
@@ -123,7 +116,6 @@ func oracleFor(pattern, mode string) string {
 }
 
 // The plain construction must be untouched by any of this, or every existing
-// pattern silently changes shape.
 func TestPatternsWithoutAWordBoundaryKeepTheOriginalConstruction(t *testing.T) {
 	for _, pattern := range []string{`abc`, `a+b`, `[0-9]{2,4}`, `foo|bar`, `(?i)k`} {
 		re, err := syntax.Parse(pattern, syntax.Perl)
@@ -142,8 +134,6 @@ func TestPatternsWithoutAWordBoundaryKeepTheOriginalConstruction(t *testing.T) {
 }
 
 // A boundary in contains mode is the case that used to be refused outright, and
-// the restart default is what makes it delicate: a restart carries no memory of
-// the character that caused it, so the alphabet has to cover every rune.
 func TestContainsModeCoversEveryRune(t *testing.T) {
 	d := buildFor(t, `\bcat\b`, "contains")
 	for _, s := range d.States {

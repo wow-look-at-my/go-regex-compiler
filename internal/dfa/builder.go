@@ -13,7 +13,6 @@ import (
 const MaxStates = 10000
 
 // Build converts an NFA program (from regexp/syntax.Compile) into a DFA that
-// matches the pattern anchored at the current position (full/prefix modes).
 func Build(prog *syntax.Prog) (*DFA, error) {
 	b := &builder{
 		prog:     prog,
@@ -23,12 +22,6 @@ func Build(prog *syntax.Prog) (*DFA, error) {
 }
 
 // BuildSearch converts an NFA program into an unanchored SEARCH DFA: the start
-// closure is folded into every state, so a single left-to-right pass tracks
-// every possible match start simultaneously (the classic product construction
-// for ".*pattern"). An accepting state means "some substring ending here
-// matches". Ranges with no recorded transition restart the scan: the correct
-// target is exactly the start state, which codegen emits as the switch
-// default, so those transitions are omitted here.
 func BuildSearch(prog *syntax.Prog) (*DFA, error) {
 	b := &builder{
 		prog:     prog,
@@ -47,12 +40,10 @@ type builder struct {
 	startSet []int // epsilon closure of prog.Start
 
 	// Word-boundary construction only (see wordboundary.go): states hold the
-	// NFA set before closure, plus the class of the character that preceded it.
 	startPending []int
 	prevWord     []bool
 
 	// Scratch state for epsilonClosure, reused across calls: visited[pc] holds
-	// the generation of the last closure that reached pc.
 	visited []int
 	gen     int
 	stack   []int
@@ -99,7 +90,7 @@ func (b *builder) build() (*DFA, error) {
 	return &b.dfa, nil
 }
 
-// unionSorted merges two sorted int slices without duplicates.
+// unionSorted merges sorted int slices without duplicates.
 func unionSorted(a, b []int) []int {
 	result := make([]int, 0, len(a)+len(b))
 	i, j := 0, 0
@@ -128,7 +119,6 @@ func (b *builder) nfaStatesForDFA(id int) []int {
 }
 
 // epsilonClosure computes all NFA states reachable from the given states
-// via epsilon transitions (InstAlt, InstAltMatch, InstNop, InstCapture, InstEmptyWidth).
 func (b *builder) epsilonClosure(states []int) []int {
 	if b.visited == nil {
 		b.visited = make([]int, len(b.prog.Inst))
@@ -157,7 +147,6 @@ func (b *builder) epsilonClosure(states []int) []int {
 			stack = append(stack, int(inst.Out))
 		case syntax.InstEmptyWidth:
 			// For full-match mode, we follow through empty-width assertions.
-			// ^/$ are implicitly satisfied since we match the entire string.
 			stack = append(stack, int(inst.Out))
 		case syntax.InstMatch, syntax.InstFail,
 			syntax.InstRune, syntax.InstRune1,
@@ -172,7 +161,6 @@ func (b *builder) epsilonClosure(states []int) []int {
 }
 
 // move computes which NFA states are reached from the given state set
-// by consuming a rune in the range [lo, hi].
 func (b *builder) move(states []int, lo, hi rune) []int {
 	var result []int
 	for _, pc := range states {
@@ -206,12 +194,6 @@ func (b *builder) move(states []int, lo, hi rune) []int {
 				result = append(result, int(inst.Out))
 			} else if lo < '\n' || hi > '\n' {
 				// The range partially overlaps \n. Since we partition cleanly,
-				// this case means our partition range doesn't fully contain \n only,
-				// so we can include it (the partition range won't contain \n).
-				// Actually, if the partition includes \n, we should NOT match.
-				// But if the partition is wider, the partitioning should have split
-				// at \n boundaries. So if lo <= '\n' && '\n' <= hi, skip it.
-				// This case is already handled above.
 			}
 		}
 	}
@@ -236,19 +218,16 @@ func (b *builder) runeMatchesRange(inst *syntax.Inst, lo, hi rune) bool {
 	return false
 }
 
-// NormalizeRunePairs ensures the rune slice is in pair format [lo, hi, ...].
-// When Rune has odd length (e.g., a single rune from a literal with FoldCase),
-// each unpaired rune is treated as a [r, r] range. Exported for the submatch
-// codegen alongside ExpandFoldCase.
+// NormalizeRunePairs ensures the rune slice is in format [lo, hi,...].
 func NormalizeRunePairs(runes []rune) []rune {
 	if len(runes)%2 == 0 {
 		return runes
 	}
-	// Single rune: treat as [r, r]
+	// rune: treat as [r, r]
 	if len(runes) == 1 {
 		return []rune{runes[0], runes[0]}
 	}
-	// Odd length > 1: shouldn't happen, but handle gracefully
+	// Odd length >: shouldn't happen, but handle gracefully
 	result := make([]rune, 0, len(runes)+1)
 	result = append(result, runes...)
 	result = append(result, runes[len(runes)-1])
@@ -256,7 +235,6 @@ func NormalizeRunePairs(runes []rune) []rune {
 }
 
 // computeAlphabet computes the minimal set of non-overlapping rune ranges
-// that partition the input alphabet for the given NFA state set.
 func (b *builder) computeAlphabet(states []int) []RuneRange {
 	var boundaries []rune
 
@@ -318,7 +296,6 @@ func (b *builder) computeAlphabet(states []int) []RuneRange {
 }
 
 // getOrCreateState returns the DFA state ID for the given NFA state set,
-// creating a new DFA state if necessary.
 func (b *builder) getOrCreateState(nfaStates []int) int {
 	key := serializeStateSet(nfaStates)
 	if id, ok := b.stateMap[key]; ok {
@@ -358,18 +335,12 @@ func serializeStateSet(states []int) string {
 }
 
 // Unicode simple case folding only exists inside [minFold, maxFold] (the same
-// band regexp/syntax uses); runes outside it fold only to themselves.
 const (
 	minFold = 0x0041
 	maxFold = 0x1e943
 )
 
 // ExpandFoldCase expands rune range pairs to include all case-folded
-// equivalents. The scan is clamped to the foldable band, which bounds the
-// work without dropping any fold (a previous version silently capped
-// expansion at 256 runes per range, losing folds at offsets >= 256, e.g.
-// U+212A KELVIN SIGN inside a wide folded range). Exported for the submatch
-// codegen, which expands fold orbits into the emitted NFA rune tables.
 func ExpandFoldCase(runes []rune) []rune {
 	var expanded []rune
 	expanded = append(expanded, runes...)

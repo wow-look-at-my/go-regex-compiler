@@ -24,8 +24,6 @@ type fixture struct {
 }
 
 // namedFixture drives generation of named-capture submatch fixtures: the
-// positional family (Find/FindIndex), the SubexpNames accessor, and the typed
-// capture struct. Used by the differential parity test in submatch_parity_test.go.
 type namedFixture struct {
 	file       string
 	regex      string
@@ -37,9 +35,6 @@ type namedFixture struct {
 }
 
 // namedFixtures is the corpus exercised by the parity test. It MUST include
-// named groups, optional, alternation, nested, last-iteration-wins repetition,
-// non-capturing, zero-width, and realistic log patterns (apache access line,
-// RFC3339 timestamp, logfmt field).
 var namedFixtures = []namedFixture{
 	{"gen_named_ym.go", `(?P<y>\d{2})(?P<m>\d{2})`, "MatchYM", "FindYM", "NamesYM", "YM", "FindYMStruct"},
 	{"gen_named_optional.go", `(a)?b`, "MatchOpt", "FindOpt", "NamesOpt", "", ""},
@@ -58,19 +53,13 @@ var namedFixtures = []namedFixture{
 	{"gen_named_logfmt.go", `(?P<key>\w+)="(?P<val>[^"]*)"`, "MatchLogfmt", "FindLogfmt", "NamesLogfmt", "LogfmtField", "FindLogfmtField"},
 	{"gen_named_opt2.go", `(?P<a>x)?(?P<b>y)`, "MatchOpt2", "FindOpt2", "NamesOpt2", "Opt2", "FindOpt2Struct"},
 	// Case-folded submatch regressions: the compiled matcher must honor the
-	// full Unicode simple-fold orbit ((?i)a is stored by regexp/syntax as 'A'
-	// only; (?i)(k)x must also match the Kelvin sign). The fold class makes
-	// these ambiguous for the one-pass path, so they compile via TDFA.
 	{"gen_sub_casei_a.go", `(?i)(a)bc`, "MatchCaseIA", "FindCaseIA", "NamesCaseIA", "", ""},
 	{"gen_sub_casei_hello.go", `(?i)(hello)`, "MatchCaseIHello2", "FindCaseIHello2", "NamesCaseIHello2", "", ""},
 	{"gen_sub_casei_k.go", `(?i)(k)x`, "MatchCaseIK", "FindCaseIK", "NamesCaseIK", "", ""},
 	// Chain-compression re-entry cascades into submatch via the bool gate.
 	{"gen_sub_chain.go", `a{3}(ba{3})*`, "MatchChainSub", "FindChainSub", "NamesChainSub", "", ""},
 
-	// Ambiguous-capture fixtures: the one-pass path rejects these (two live
-	// consuming instructions can match the same rune, or a (?i) fold class), so
-	// they compile via the TDFA register machine. Exercised by the parity and
-	// differential-fuzz tests. NONE emit an interpreter.
+	// Ambiguous-capture fixtures: the -pass path rejects these (live
 	{"gen_amb_starstar.go", `(a*)(a*)`, "MatchStarStar", "FindStarStar", "NamesStarStar", "", ""},
 	{"gen_amb_sss.go", `(a*)(a*)(a*)`, "MatchSSS", "FindSSS", "NamesSSS", "", ""},
 	{"gen_amb_altstar.go", `(a|ab)(a*)`, "MatchAltStar", "FindAltStar", "NamesAltStar", "", ""},
@@ -83,10 +72,6 @@ var namedFixtures = []namedFixture{
 	{"gen_amb_words.go", `(\w+)(\w*)`, "MatchWordsSub", "FindWordsSub", "NamesWordsSub", "", ""},
 
 	// Interior always-true \B fixtures: dfa.ValidateAssertions proves the \B
-	// always holds (both sides are word chars), so the compiled paths fold it to
-	// a no-op. The literal sequences compile one-pass; the adjacent-\w+ patterns
-	// compile via the TDFA register machine. NONE emit an interpreter — these are
-	// the exact patterns the old instruction-table walker used to serve.
 	{"gen_negwb_ab.go", `(a\Bb)`, "MatchNegWBab", "FindNegWBab", "NamesNegWBab", "", ""},
 	{"gen_negwb_foobar.go", `(foo\Bbar)`, "MatchNegWBFoobar", "FindNegWBFoobar", "NamesNegWBFoobar", "", ""},
 	{"gen_negwb_foo_bar.go", `(foo\B)(bar)`, "MatchNegWBFooBar", "FindNegWBFooBar", "NamesNegWBFooBar", "", ""},
@@ -135,15 +120,12 @@ var fixtures = []fixture{
 	{"gen_prefix_digitdash.go", `\d{3}-\d{2}`, "MatchPrefixDigitDash", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_aplusb.go", "a+b", "MatchPrefixAPlusB", codegen.MatchPrefix, false, ""},
 	// Regression: a shorter alternative must stay latched when a longer
-	// non-matching continuation exists (prefix "a" of "ab" for a|abc).
 	{"gen_prefix_alt.go", "a|abc", "MatchPrefixAlt", codegen.MatchPrefix, false, ""},
 	// Regression: a prefix match that passes THROUGH an accepting state
-	// ("a" accepts, then the DFA keeps going for the optional "bc").
 	{"gen_prefix_optional.go", "a(bc)?", "MatchPrefixOptional", codegen.MatchPrefix, false, ""},
 	{"gen_prefix_astar.go", "a*", "MatchPrefixAStar", codegen.MatchPrefix, false, ""},
 
 	// A trailing (?m)$ in full mode is a provable no-op (nothing can follow
-	// it), so it passes assertion validation and must behave like a\z.
 	{"gen_full_mline_adollar.go", `(?m)a$`, "MatchMLineADollar", codegen.MatchFull, false, ""},
 
 	// Contains mode
@@ -151,17 +133,12 @@ var fixtures = []fixture{
 	{"gen_contains_ssn.go", `\d{3}-\d{2}-\d{4}`, "MatchContainsSSN", codegen.MatchContains, false, ""},
 	{"gen_contains_error.go", "error", "MatchContainsError", codegen.MatchContains, false, ""},
 	// Regression: self-overlapping literal — the search DFA must track a match
-	// attempt that starts INSIDE a failed earlier attempt ("aaab" contains "aab").
-	// (A complete literal compiles to strings.Contains; this guards that path.)
 	{"gen_contains_overlap.go", "aab", "MatchContainsOverlap", codegen.MatchContains, false, ""},
 	// Same overlap shape through the DFA scan loop (non-literal pattern).
 	{"gen_contains_overlap_class.go", "aa[bc]", "MatchContainsOverlapClass", codegen.MatchContains, false, ""},
 	// Regression: the search DFA's restart default re-enters the
-	// chain-compressed start state and must reset its chain counter (a stale
-	// count made "aaxaab" match aaa[bc]).
 	{"gen_contains_chainrestart.go", "aaa[bc]", "MatchContainsChainRestart", codegen.MatchContains, false, ""},
 	// Regression: unbounded backtracking shape that made the old
-	// restart-at-every-position loop O(n^2) on all-'a' inputs.
 	{"gen_contains_astarb.go", "a*b", "MatchContainsAStarB", codegen.MatchContains, false, ""},
 	// Unicode contains: exercises the rune-loop search DFA.
 	{"gen_contains_unicode.go", `[\x{00C0}-\x{00FF}]+`, "MatchContainsUnicode", codegen.MatchContains, false, ""},
@@ -193,40 +170,22 @@ func main() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Differential fuzz corpus (see fuzz_diff_test.go)
-// ---------------------------------------------------------------------------
-
 // fuzzDirected are patterns targeting previously-broken generator classes:
-// prefix acceptance latching, chain-compression re-entry (including the
-// contains-mode restart into a chain-compressed start state), empty-width
-// assertions in all modes (combos dfa.ValidateAssertions rejects are skipped
-// here and pinned by TestFuzzCorpusMatchesValidator), (?i) submatch fold
-// orbits, contains-mode empty-match short-circuit bodies, the contains
-// literal/IndexByte fast paths, and invalid-UTF-8 parity.
 var fuzzDirected = []string{
 	// Prefix latch (audit B).
 	`a|abc`, `\D{3,5}`, `a(bc)?`,
 	// Chain-compression re-entry (audit C); the capturing variant also
-	// exercises the submatch cascade through the bool gate, and aaa[bc]
-	// exercises the contains-mode restart into a chain-compressed start.
 	`a{3}(?:ba{3})*`, `a{3}(ba{3})*`, `aaa[bc]`,
 	// Empty-width assertions (audit A). Most (pattern, mode) combos are
-	// rejected by ValidateAssertions and therefore absent from the corpus;
-	// the accepted no-op placements are differentially tested.
 	`a\bb`, `a$b`, `\b\s`, `^a`, `\bfoo\b`, `$`, `^`, `(?m)a$`, `(?m)^b`,
 	`\Bx`, `a\b`, `\bword\b`, `^a$`, `\A[ab]+\z`, `(?m)^$`, `foo\b`, `a(?:\b)+b`,
 	// (?i) submatch fold orbits (audit D; these have capture groups, so the
-	// full-mode entries also emit an Index function into the sub corpus).
 	`(?i)(a)bc`, `(?i)(hello)`, `(?i)(k)x`,
 	// Contains-mode empty-match short-circuits (audit E).
 	`\D?`, `x*`, `(a|b)*`, `a?b?`,
 	// Contains fast paths: complete literals (ASCII and Unicode; the latter
-	// also guards the no-utf8-import strings.Contains body) and the
-	// single-start-byte IndexByte skip.
 	`error`, `héllo`, `e[0-9]+`,
-	// General parity, including invalid-UTF-8 handling (matched as U+FFFD,
-	// exactly like regexp).
+	// General parity, including invalid-UTF- handling (matched as U+FFFD,
 	`(?i)abc`, `[^a]`, `a.{0,2}b`, `(a+)(b+)`, `(?s).`, `.+`,
 	`[a-z0-9][a-z0-9._-]{0,127}`,
 }
@@ -238,8 +197,6 @@ const (
 )
 
 // randFuzzPattern builds a random pattern from a constrained grammar covering
-// literals, classes, perl classes, dot, quantifiers (greedy and lazy),
-// grouping, alternation, case folding, and anchors/boundaries.
 func randFuzzPattern(r *rand.Rand, depth int) string {
 	atoms := []string{
 		"a", "b", "c", "x", "0", "1", "_", " ", `\n`,
@@ -287,7 +244,6 @@ func randFuzzPattern(r *rand.Rand, depth int) string {
 }
 
 // fuzzModes mirrors the CLI's mode table: template mode, function suffix,
-// tag string, and the assertion anchoring ValidateAssertions is given.
 var fuzzModes = []struct {
 	mode                   codegen.MatchMode
 	suffix, tag            string
@@ -299,9 +255,6 @@ var fuzzModes = []struct {
 }
 
 // fuzzComboUsable reports whether a (pattern, mode) combination enters the
-// corpus: its assertions must validate for the mode's anchoring and its DFA
-// must build within the state cap. fuzz_diff_test.go re-derives this same
-// predicate to pin the corpus against the validator, so keep them in sync.
 func fuzzComboUsable(prog *syntax.Prog, mode codegen.MatchMode, anchorStart, anchorEnd bool) bool {
 	if dfa.ValidateAssertions(prog, anchorStart, anchorEnd) != nil {
 		return false
@@ -314,10 +267,7 @@ func fuzzComboUsable(prog *syntax.Prog, mode codegen.MatchMode, anchorStart, anc
 	return err == nil && len(d.States) <= fuzzMaxStates
 }
 
-// generateFuzzCorpus emits gen_fuzz_corpus_test.go: one bool matcher per
-// usable (pattern, mode), a submatch Index function for usable full-mode
-// patterns with capture groups, and registries for fuzz_diff_test.go.
-// Output is fully deterministic (fixed seed, fixed order).
+// generateFuzzCorpus emits gen_fuzz_corpus_test.go: bool matcher per
 func generateFuzzCorpus() error {
 	patterns := append([]string{}, fuzzDirected...)
 	r := rand.New(rand.NewSource(fuzzSeed))
@@ -379,10 +329,7 @@ func generateFuzzCorpus() error {
 			var buf bytes.Buffer
 			err = codegen.Generate(&buf, d, opts)
 			if err != nil && withSubmatch {
-				// Submatch always compiles to a state machine (one-pass or
-				// TDFA) — there is no interpreter fallback, so the generator
-				// refuses patterns past the TDFA budget. Keep the bool
-				// matcher in the corpus and drop only the Index function.
+				// Submatch always compiles to a state machine (-pass or
 				withSubmatch = false
 				opts.Submatch = nil
 				buf.Reset()
@@ -441,9 +388,7 @@ func generateFuzzCorpus() error {
 	return os.WriteFile("gen_fuzz_corpus_test.go", out.Bytes(), 0644)
 }
 
-// splitGenerated strips the per-file header from one codegen.Generate output,
-// returning the function bodies and any import lines encountered (the corpus
-// is concatenated into a single file with one merged import set).
+// splitGenerated strips the per-file header from codegen.Generate output,
 func splitGenerated(src string) (body string, imports []string, err error) {
 	idx := strings.Index(src, "\npackage e2e\n")
 	if idx < 0 {
@@ -576,7 +521,6 @@ func generateSubmatch(f fixture) error {
 			NumGroups:   result.NumGroups,
 			GroupNames:  result.GroupNames,
 			// Unique per-fixture names accessor to avoid SubexpNames collisions
-			// across fixtures sharing the e2e package.
 			NamesFuncName: f.subFunc + "Names",
 		}
 	}

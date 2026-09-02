@@ -79,13 +79,10 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 
 	if submatch && mode != codegen.MatchFull {
 		// The generated submatch family extracts from a FULL-string match
-		// (parity with regexp on an anchored pattern). Combining it with
-		// prefix/contains produced a self-contradictory pair: Match(input)
-		// could be true while FindSubmatch(input) returned nil.
 		return fmt.Errorf("--submatch requires --match full: the submatch functions extract capture groups from a full-string match, which %s mode does not produce", matchMode)
 	}
 
-	// Stage 1: Parse regex into NFA (with capture group info)
+	// Stage: Parse regex into NFA (with capture group info)
 	result, err := parser.ParseResult(regex)
 	if err != nil {
 		return err
@@ -95,7 +92,6 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Reject empty-width assertions the DFA cannot honor in this match mode
-	// (previously they were silently ignored, producing wrong matchers).
 	anchorStart, anchorEnd := true, true
 	switch mode {
 	case codegen.MatchPrefix:
@@ -104,8 +100,6 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		anchorStart, anchorEnd = false, false
 	}
 	// The bool matcher decides \b and \B from the state it carries, so only the
-	// text anchors need proving here. --submatch keeps the strict check below,
-	// because its compilers do walk an always-true assertion through.
 	if err := dfa.ValidateAssertionsForBoolMatcher(result.Prog, anchorStart, anchorEnd); err != nil {
 		return err
 	}
@@ -115,8 +109,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Stage 2: Build DFA from NFA. Contains mode uses the unanchored search
-	// DFA so the generated matcher scans the input in a single pass.
+	// Stage: Build DFA from NFA. Contains mode uses the unanchored search
 	build := dfa.Build
 	if mode == codegen.MatchContains {
 		build = dfa.BuildSearch
@@ -126,7 +119,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Stage 3: Generate Go code
+	// Stage: Generate Go code
 	opts := codegen.Options{
 		PackageName: pkg,
 		FuncName:    funcName,

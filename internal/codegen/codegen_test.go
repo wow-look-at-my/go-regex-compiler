@@ -89,7 +89,6 @@ func TestGenerateHeader(t *testing.T) {
 
 func TestGenerateControlCharPattern(t *testing.T) {
 	// A pattern containing a literal newline (or any control character) must
-	// not split the header line comments and break the generated file.
 	patterns := []string{"(?m)a$\nb", "a\tb", "a\rb"}
 	for _, pattern := range patterns {
 		t.Run(strconv.Quote(pattern), func(t *testing.T) {
@@ -200,8 +199,7 @@ func generateWithMode(t *testing.T, pattern, funcName string, mode MatchMode) st
 	return buf.String()
 }
 
-// TestGenerateContainsLiteral: a pattern that is one exact literal compiles
-// contains mode to a single strings.Contains call.
+// TestGenerateContainsLiteral: a pattern that is exact literal compiles
 func TestGenerateContainsLiteral(t *testing.T) {
 	out := generateWithMode(t, "error", "MatchContains", MatchContains)
 	assertValidGo(t, out)
@@ -219,9 +217,6 @@ func TestGenerateContainsLiteral(t *testing.T) {
 }
 
 // TestGenerateContainsIndexByteSkip: a non-literal contains matcher whose
-// search DFA can only leave the start state on one byte must memchr to that
-// byte instead of stepping the DFA, and the fast path must not leak into
-// other shapes.
 func TestGenerateContainsIndexByteSkip(t *testing.T) {
 	out := generateWithMode(t, "e[0-9]+", "MatchContains", MatchContains)
 	assertValidGo(t, out)
@@ -271,8 +266,6 @@ func TestGenerateContainsMode(t *testing.T) {
 
 func TestGenerateContainsStartAcceptsCompiles(t *testing.T) {
 	// A contains-mode matcher whose DFA start state accepts short-circuits to
-	// `return true`; the header must not emit the match/utf8 imports the body
-	// never uses (they made 19/228 fuzzed contains patterns fail to compile).
 	for _, p := range []string{`\D?`, `x*`, `a?`, `\W*`, `(a|b)*`} {
 		t.Run(p, func(t *testing.T) {
 			out := generateWithMode(t, p, "MatchContains", MatchContains)
@@ -291,15 +284,10 @@ func TestGeneratePrefixModeUnicode(t *testing.T) {
 }
 
 // TestGeneratePrefixPassThroughAccept is a regression test: a prefix match
-// that passes THROUGH an accepting state (here after "a", while the DFA could
-// still consume "bc") must be reported even when a longer attempt dies later.
-// The old codegen only tested the state the DFA died in, so `a(bc)?` against
-// "abx" (and "ab") returned false despite the matching prefix "a".
 func TestGeneratePrefixPassThroughAccept(t *testing.T) {
 	output := generateWithMode(t, `a(bc)?`, "MatchPrefix", MatchPrefix)
 	assertValidGo(t, output)
 	// Entering the accept state after 'a' must immediately return true; the
-	// generated matcher must not wait for the DFA to die first.
 	assert.Contains(t, output, "case c == 'a': return true")
 }
 
@@ -356,16 +344,13 @@ func TestGenerateSubmatch(t *testing.T) {
 
 			if strings.Contains(output, "addThread") {
 				// Thompson interpreter fallback (ambiguous captures): the
-				// package-level NFA program + op-dispatch sim must be present.
 				assert.Contains(t, output, "opRune")
 				assert.Contains(t, output, "RuneMatch")
 				assert.Contains(t, output, "type findSubmatchIndexInst struct")
 				assert.Contains(t, output, "var findSubmatchIndexProg = []findSubmatchIndexInst{")
 				assert.Contains(t, output, "sync.Pool")
 			} else {
-				// Compiled one-pass matcher: a straight-line `switch state`
-				// automaton with inline capture writes and NO interpreter —
-				// no program table, thread lists, epsilon-closure, or pool.
+				// Compiled -pass matcher: a straight-line `switch state`
 				assert.Contains(t, output, "switch state {")
 				assert.Contains(t, output, "caps[")
 				assert.NotContains(t, output, "findSubmatchIndexProg")
@@ -379,7 +364,6 @@ func TestGenerateSubmatch(t *testing.T) {
 }
 
 // generateNamedSubmatch builds a full submatch family (positional, index,
-// names, optional struct) for a pattern and returns the generated source.
 func generateNamedSubmatch(t *testing.T, pattern string, withStruct bool) string {
 	t.Helper()
 	re, err := syntax.Parse(pattern, syntax.Perl)
@@ -442,8 +426,7 @@ func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
 	assert.Contains(t, out, "Matched bool")
 	assert.Contains(t, out, "func FindCaptures(input string) Captures")
 
-	// This pattern is one-pass, so the core is the COMPILED automaton: a
-	// `switch state` machine with inline capture writes and no interpreter.
+	// This pattern is -pass, so the core is the COMPILED automaton: a
 	assert.Contains(t, out, "switch state {")
 	assert.Contains(t, out, "caps[")
 	assert.NotContains(t, out, "addThread")
@@ -452,8 +435,6 @@ func TestGenerateNamedSubmatchEmitsFamily(t *testing.T) {
 
 func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {
 	// A pattern with NO named groups must not emit struct/constructor machinery
-	// even with the struct enabled (HasNamedGroups gate), and must have no
-	// unused imports.
 	out := generateNamedSubmatch(t, `(\d{4})-(\d{2})`, true)
 	assertValidGo(t, out)
 
@@ -464,14 +445,10 @@ func TestGenerateUnnamedSubmatchNoStructMachinery(t *testing.T) {
 	assert.Contains(t, out, `return []string{"", "", ""}`)
 
 	// No unused imports: this ASCII pattern needs neither unicode/utf8 nor any
-	// new package introduced by the submatch additions. Verify the file builds
-	// and that go/format does not report an import-related problem by parsing it.
 	assertNoUnusedImports(t, out)
 }
 
 // assertNoUnusedImports parses the file and checks that every imported package
-// (other than blank/dot imports) is referenced, catching a stray import the
-// templates might leak.
 func assertNoUnusedImports(t *testing.T, code string) {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -494,7 +471,6 @@ func assertNoUnusedImports(t *testing.T, code string) {
 
 func TestGenerateSubmatchNamesParity(t *testing.T) {
 	// The generated SubexpNames slice literal must list the same names regexp
-	// would report (verified structurally; e2e tests verify at runtime).
 	out := generateNamedSubmatch(t, `(?P<a>x)(y)(?P<b>z)`, false)
 	assertValidGo(t, out)
 	assert.Contains(t, out, `return []string{"", "a", "", "b"}`)
@@ -537,10 +513,10 @@ func TestBuildSubmatchContext(t *testing.T) {
 
 	assert.Equal(t, "FindSubmatch", ctx.FuncName)
 	assert.Equal(t, "Match", ctx.MatchFunc)
-	assert.Equal(t, 6, ctx.NumSlots)  // (2+1)*2
-	assert.Equal(t, 3, ctx.NumGroups) // 6/2
+	assert.Equal(t, 6, ctx.NumSlots)  // (+)*
+	assert.Equal(t, 3, ctx.NumGroups) // /
 
-	// This pattern is one-pass, so the compiled automaton drives emission.
+	// This pattern is -pass, so the compiled automaton drives emission.
 	assert.True(t, ctx.Onepass, "expected one-pass compilation")
 	assert.NotEmpty(t, ctx.OPStates, "compiled path must have automaton states")
 	assert.True(t, ctx.OPHasAccept, "compiled path must have an accepting state")
@@ -558,11 +534,6 @@ func TestGenerateChainCompression(t *testing.T) {
 
 func TestGenerateAcceptedAssertionPatternsCompile(t *testing.T) {
 	// Assertion patterns flow into codegen only when dfa.ValidateAssertions
-	// accepts them for the mode (the assertion is a provable no-op there);
-	// everything it rejects never reaches Generate. For every ACCEPTED
-	// (pattern, mode) combination the emitted code must be valid Go with no
-	// unused imports; the rejections themselves are covered by the dfa
-	// package's assertion tests.
 	patterns := []string{
 		`a\bb`, `\bfoo\b`, `^a`, `a$`, `$`, `^`, `\b`, `\B`, `\A[ab]+\z`,
 		`(?m)a$`, `(?m)^b`, `a\zb`, `\b\s`, `a(?:\b)+b`, `(?m)^$`, `\bé\b`,
@@ -592,8 +563,6 @@ func TestGenerateAcceptedAssertionPatternsCompile(t *testing.T) {
 
 func TestGenerateChainReentryReset(t *testing.T) {
 	// A DFA loop that re-enters a compressed chain head must reset the chain
-	// counter on entry: chain counters are function-scoped, so a stale count
-	// made a{3}(?:ba{3})* jump to the chain terminal too early on re-entry.
 	output := generateCode(t, `a{3}(?:ba{3})*`, "testpkg", "Match")
 	assertValidGo(t, output)
 	require.Contains(t, output, "chainCount1", "expected the (?:ba{3})* run to be chain-compressed")

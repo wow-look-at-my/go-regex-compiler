@@ -63,8 +63,7 @@ var testInputs = []string{
 	strings.Repeat("a", 100),
 	strings.Repeat("ab", 50),
 	strings.Repeat("x", 1000),
-	// Invalid UTF-8: regexp decodes each bad byte as one U+FFFD rune (so "."
-	// and ".+" match it). Generated matchers must agree byte-for-byte.
+	// Invalid UTF-: regexp decodes each bad byte as U+FFFD rune (so "."
 	"\xff", "a\xffb", "\xed\xa0\x80", "abc\x80", "\xc3", "caf\xc3",
 	"\xef\xbf\xbd", // valid encoding of U+FFFD itself
 }
@@ -75,7 +74,6 @@ func anchoredRegexp(pattern string) *regexp.Regexp {
 }
 
 // TestCorrectnessVsRegexp verifies each pre-generated matcher produces the
-// same results as regexp.MatchString for all test inputs.
 func TestCorrectnessVsRegexp(t *testing.T) {
 	for _, tp := range testPatterns {
 		t.Run(tp.name, func(t *testing.T) {
@@ -174,8 +172,6 @@ func BenchmarkVsRegexp(b *testing.B) {
 }
 
 // BenchmarkSubmatchVsRegexp compares generated submatch extraction against
-// regexp.FindStringSubmatch and FindStringSubmatchIndex over representative
-// patterns, including a realistic Apache access-log line.
 func BenchmarkSubmatchVsRegexp(b *testing.B) {
 	cases := []struct {
 		name    string

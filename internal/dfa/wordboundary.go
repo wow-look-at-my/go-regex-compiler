@@ -1,18 +1,5 @@
 package dfa
 
-// \b holds exactly where the classes of the neighbouring characters disagree.
-// A state that carries the left neighbour's class can therefore decide the
-// assertion as soon as it sees the right one, so a state here is (pending NFA
-// set, prevWord) and the epsilon closure is deferred until a transition knows
-// the next character. The bit rides in the state identity, so the emitted
-// switch keeps the shape it has always had.
-//
-// A match ending at a trailing \b needs the character after it, which the
-// scanner has consumed by the time it reaches the next state. Acceptance
-// therefore splits: State.Accept records that a match ended on the way in, and
-// State.AcceptAtEnd answers for end-of-text, which counts as a non-word
-// character.
-
 import (
 	"fmt"
 	"regexp/syntax"
@@ -21,8 +8,6 @@ import (
 )
 
 // hasWordBoundary reports whether prog contains a \b or \B. Without either, the
-// builder keeps its original path, so existing patterns keep their state
-// numbering and output.
 func hasWordBoundary(prog *syntax.Prog) bool {
 	for i := range prog.Inst {
 		inst := &prog.Inst[i]
@@ -36,7 +21,7 @@ func hasWordBoundary(prog *syntax.Prog) bool {
 	return false
 }
 
-// isWordRune reports whether r is one of [0-9A-Za-z_], the class \b compares.
+// isWordRune reports whether r is of [-9A-Za-z_], the class \b compares.
 func isWordRune(r rune) bool {
 	return r == '_' ||
 		(r >= '0' && r <= '9') ||
@@ -59,10 +44,6 @@ func (b *builder) buildWordAware() (*DFA, error) {
 		prevWord := b.prevWord[state.ID]
 
 		// The alphabet is needed before the closure that depends on it, so it
-		// is taken over both readings of the next character and then cut at the
-		// word ranges. Each resulting range is uniformly word or non-word,
-		// which lets its transition resolve the assertion. An over-wide
-		// alphabet costs only dead transitions, which are dropped.
 		both := unionSorted(
 			b.closureWB(pending, prevWord, true),
 			b.closureWB(pending, prevWord, false))
@@ -76,11 +57,6 @@ func (b *builder) buildWordAware() (*DFA, error) {
 				moved = unionSorted(moved, b.startPending)
 			}
 			// Acceptance on entry comes from either of these. A match gated on a trailing
-			// \b ended BEFORE the character being consumed, and only this
-			// transition knows the character that settles it, so it is carried
-			// onto the state being entered. A match needing no such gate is
-			// already certain on arrival, which is what both readings of the
-			// NEXT character agreeing proves.
 			accept := containsMatch(b.prog, closed) ||
 				(b.closureHasMatch(moved, curWord, true) && b.closureHasMatch(moved, curWord, false))
 			if len(moved) == 0 && !accept {
@@ -100,10 +76,7 @@ func (b *builder) buildWordAware() (*DFA, error) {
 	return &b.dfa, nil
 }
 
-// closureWB is the epsilon closure with both neighbours known, so a
-// word-boundary assertion is a real test rather than something to walk through.
-// Text anchors stay unconditional: ValidateAssertions still refuses the
-// placements this construction cannot answer for.
+// closureWB is the epsilon closure with neighbours known, so a
 func (b *builder) closureWB(pending []int, prevWord, nextWord bool) []int {
 	atBoundary := prevWord != nextWord
 	if b.visited == nil {
@@ -158,13 +131,6 @@ func containsMatch(prog *syntax.Prog, set []int) bool {
 }
 
 // wordSplitAlphabet cuts ranges at the word-class edges so each range is
-// uniformly word or non-word, over every rune. Totality is what a boundary
-// needs: the character that settles a trailing \b is a character the pattern
-// never consumes, so an alphabet built from the consuming instructions alone
-// cannot see it. Search mode needs it again, because the generated
-// switch restarts the scan on its default branch and a restart carries no
-// knowledge of the character that caused it. Ranges that lead nowhere and
-// complete no match are dropped by the caller.
 func (b *builder) wordSplitAlphabet(consuming []RuneRange) []RuneRange {
 	bounds := []rune{'0', '9' + 1, 'A', 'Z' + 1, '_', '_' + 1, 'a', 'z' + 1}
 	cuts := []rune{0, unicode.MaxRune + 1}
@@ -177,8 +143,6 @@ func (b *builder) wordSplitAlphabet(consuming []RuneRange) []RuneRange {
 	sort.Slice(cuts, func(i, j int) bool { return cuts[i] < cuts[j] })
 
 	// Neighbouring ranges of the same word class answer \b identically, so
-	// joining them costs a transition and changes nothing -- unless the pattern
-	// consumes a rune in either, where they differ in where they go.
 	consumed := func(r rune) bool {
 		for _, rr := range consuming {
 			if rr.Lo <= r && r <= rr.Hi {
@@ -220,9 +184,6 @@ func sortUnique(in []int) []int {
 }
 
 // getOrCreateWordState keys a state on everything that decides its behavior.
-// Positions sharing a pending set but differing in the preceding character
-// answer \b differently, so prevWord is part of the identity, as are the
-// acceptance answers a caller cannot recompute from the set alone.
 func (b *builder) getOrCreateWordState(pending []int, prevWord, accept, acceptAtEnd bool) int {
 	key := serializeStateSet(pending) + "|" +
 		boolKey(prevWord) + boolKey(accept) + boolKey(acceptAtEnd)

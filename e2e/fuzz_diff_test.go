@@ -14,21 +14,7 @@ import (
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
-// This file drives the deterministic differential fuzz corpus generated into
-// gen_fuzz_corpus_test.go (see generate_fixtures.go): every generated matcher
-// is compared against stdlib regexp over a fixed, seeded input set. The
-// corpus targets the historically broken generator classes -- prefix-mode
-// acceptance latching, chain-compression re-entry (including the contains
-// restart), (?i) submatch fold orbits, contains-mode empty-match and literal
-// fast-path bodies, invalid-UTF-8 parity -- plus 50 seeded random patterns.
-// Empty-width assertion placements that dfa.ValidateAssertions rejects are
-// absent from the corpus by construction; TestFuzzCorpusMatchesValidator
-// pins that split so a silently-miscompiling placement cannot sneak back in.
-// Everything is deterministic; no network, runtime well under a second.
-
 // fuzzFixedInputs are shared edge-case inputs applied to every pattern.
-// The last row is invalid UTF-8: generated matchers must agree with regexp,
-// which decodes each bad byte as one U+FFFD rune and keeps matching.
 var fuzzFixedInputs = []string{
 	"", "a", "b", "c", "x", "ab", "ba", "abc", "abcd", "abcabc", "aab", "abb",
 	"0", "01", "0123", "_", "a_b", "a b", " ", "\t", "\n", "a\n", "\na",
@@ -42,7 +28,6 @@ var fuzzFixedInputs = []string{
 }
 
 // fuzzInputsFor returns the deterministic input set for a pattern: the fixed
-// edge cases plus seeded random strings over a pattern-aware alphabet.
 func fuzzInputsFor(pattern string) []string {
 	alphabet := []rune{'a', 'b', 'c', 'x', 'y', '0', '1', '_', ' ', '\n', '!', 'K', 'k', 'é'}
 	for _, r := range pattern {
@@ -68,7 +53,6 @@ func fuzzInputsFor(pattern string) []string {
 }
 
 // fuzzStdlib compiles the stdlib equivalent of a generated matcher: full mode
-// is ^(?:p)$, prefix is ^(?:p), contains is unanchored p.
 func fuzzStdlib(t *testing.T, pattern, mode string) *regexp.Regexp {
 	t.Helper()
 	var anchored string
@@ -88,7 +72,6 @@ func fuzzStdlib(t *testing.T, pattern, mode string) *regexp.Regexp {
 }
 
 // TestFuzzDifferential compares every generated bool matcher in the fuzz
-// corpus against stdlib regexp.MatchString, including on invalid UTF-8.
 func TestFuzzDifferential(t *testing.T) {
 	require.NotEmpty(t, fuzzCorpus, "fuzz corpus is empty; run `go generate ./e2e/...`")
 	comparisons := 0
@@ -107,8 +90,6 @@ func TestFuzzDifferential(t *testing.T) {
 }
 
 // TestFuzzDifferentialSubmatch compares every generated submatch Index
-// function in the fuzz corpus against stdlib FindStringSubmatchIndex on the
-// anchored (full-match) pattern.
 func TestFuzzDifferentialSubmatch(t *testing.T) {
 	require.NotEmpty(t, fuzzSubCorpus, "fuzz submatch corpus is empty; run `go generate ./e2e/...`")
 	comparisons := 0
@@ -126,12 +107,6 @@ func TestFuzzDifferentialSubmatch(t *testing.T) {
 }
 
 // TestFuzzCorpusMatchesValidator re-derives, for every corpus pattern and
-// mode, whether the generator considers the combination usable (assertions
-// validate for the mode's anchoring and the DFA builds within the state
-// cap), and asserts the generated corpus contains exactly the usable combos.
-// This pins the item-A contract: an assertion placement is either compiled
-// and differentially correct, or loudly rejected at generation time -- never
-// silently miscompiled and quietly dropped from coverage.
 func TestFuzzCorpusMatchesValidator(t *testing.T) {
 	require.NotEmpty(t, fuzzPatterns, "fuzz corpus is empty; run `go generate ./e2e/...`")
 	inCorpus := set.New[[2]string]()
