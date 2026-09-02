@@ -9,7 +9,6 @@ import (
 )
 
 // submatchParityCase pairs a generated matcher family with its source pattern
-// and a set of inputs to compare byte-for-byte against stdlib regexp.
 type submatchParityCase struct {
 	name    string
 	pattern string
@@ -20,7 +19,6 @@ type submatchParityCase struct {
 }
 
 // sharedInputs are applied to every parity case in addition to the
-// pattern-specific inputs, to broaden coverage cheaply.
 var sharedInputs = []string{
 	"", " ", "a", "ab", "abc", "abcd", "x", "xy", "y", "c", "ac", "bc",
 	"1234", "12", "0000", "99999", "no match here", "ab ", " ab",
@@ -117,9 +115,6 @@ func parityCases() []submatchParityCase {
 		},
 
 		// Ambiguous-capture cases: these compile via the TDFA register machine
-		// (the one-pass path rejects them). Adjacent greedy stars, overlapping
-		// alternation, optional-then-star, nested star, and (?i) fold classes —
-		// the exact constructs that used to require the interpreter.
 		{
 			name: "amb_starstar", pattern: `(a*)(a*)`,
 			findFn: FindStarStar, indexFn: FindStarStarIndex, namesFn: NamesStarStar,
@@ -171,10 +166,7 @@ func parityCases() []submatchParityCase {
 			inputs: []string{"a", "ab", "abc", "a_1", "A9z", " "},
 		},
 
-		// Interior always-true \B cases: the \B sits between two word characters,
-		// where "no boundary" always holds, so it folds to a no-op. The literal
-		// sequences compile one-pass; the adjacent-\w+ pair compiles via TDFA.
-		// These are the exact patterns that used to require the interpreter.
+		// Interior always-true \B cases: the \B sits between word characters,
 		{
 			name: "negwb_ab", pattern: `(a\Bb)`,
 			findFn: FindNegWBab, indexFn: FindNegWBabIndex, namesFn: NamesNegWBab,
@@ -209,8 +201,6 @@ func parityCases() []submatchParityCase {
 }
 
 // TestSubmatchParity asserts the generated FindSub*/FindSub*Index functions are
-// byte-for-byte equal to stdlib regexp.FindStringSubmatch /
-// FindStringSubmatchIndex over the anchored pattern, for every input.
 func TestSubmatchParity(t *testing.T) {
 	for _, c := range parityCases() {
 		t.Run(c.name, func(t *testing.T) {
@@ -225,7 +215,7 @@ func TestSubmatchParity(t *testing.T) {
 				gotIdx := c.indexFn(in)
 				assert.Equal(t, wantIdx, gotIdx, "FindStringSubmatchIndex mismatch for %q (input=%q)", c.pattern, in)
 
-				// No-match contract: both APIs return nil.
+				// No-match contract: APIs return nil.
 				if wantStr == nil {
 					assert.Nil(t, gotStr, "expected nil submatch for non-match %q", in)
 					assert.Nil(t, gotIdx, "expected nil index for non-match %q", in)
@@ -236,7 +226,6 @@ func TestSubmatchParity(t *testing.T) {
 }
 
 // TestSubexpNamesParity asserts the generated SubexpNames accessors equal the
-// stdlib SubexpNames for the same pattern.
 func TestSubexpNamesParity(t *testing.T) {
 	for _, c := range parityCases() {
 		t.Run(c.name, func(t *testing.T) {
@@ -247,8 +236,6 @@ func TestSubexpNamesParity(t *testing.T) {
 }
 
 // TestTypedStructFields verifies the typed capture struct exposes the right
-// fields with the right values on representative inputs, and Matched=false on a
-// non-match. Covers the RFC3339, Apache, logfmt, and optional-named structs.
 func TestTypedStructFields(t *testing.T) {
 	t.Run("rfc3339", func(t *testing.T) {
 		got := FindRFC3339("2020-01-02T03:04:05Z")

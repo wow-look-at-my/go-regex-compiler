@@ -1,17 +1,5 @@
 package codegen
 
-// This file holds the text/template definitions for the submatch (capture
-// extraction) function family: the dispatcher that selects a compiled matcher
-// core (one-pass or TDFA) plus the thin string/names/struct accessor wrappers
-// shared by both. They are concatenated into allTemplates in templates.go and
-// split out here to keep each source file within the toolchain length limit.
-
-// ---------- submatch ----------
-//
-// The <FuncName>Index core is emitted by exactly one compiled path — one-pass
-// or TDFA — and the other accessors are thin wrappers over it. There is NO
-// run-time interpreter: no path emits a program table, a thread list, or a pool.
-
 const submatchFuncTemplate = `
 {{- define "submatchFunc" -}}
 {{- if .Onepass }}
@@ -26,8 +14,6 @@ const submatchFuncTemplate = `
 {{- end }}
 {{ end -}}
 `
-
-// ---------- string wrapper ----------
 
 const submatchStringFuncTemplate = `
 {{- define "submatchStringFunc" -}}
@@ -54,8 +40,6 @@ func {{ .FuncName }}(input string) []string {
 {{ end -}}
 `
 
-// ---------- names accessor ----------
-
 const submatchNamesFuncTemplate = `
 {{- define "submatchNamesFunc" -}}
 // {{ .NamesFuncName }} returns the names of the capture groups for the regex
@@ -67,8 +51,6 @@ func {{ .NamesFuncName }}() []string {
 }
 {{ end -}}
 `
-
-// ---------- typed struct ----------
 
 const submatchStructFuncTemplate = `
 {{- define "submatchStructFunc" -}}

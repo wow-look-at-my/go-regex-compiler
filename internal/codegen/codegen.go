@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"unicode"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/go-regex-compiler/internal/dfa"
 )
 
@@ -31,9 +32,6 @@ type Options struct {
 	Submatch    *SubmatchOptions // If non-nil, also generate a FindSubmatch function
 
 	// LiteralPrefix/LiteralComplete mirror syntax.Prog.Prefix() for the
-	// pattern: when LiteralComplete is true the pattern matches exactly the
-	// literal LiteralPrefix, and contains mode compiles to a single
-	// strings.Contains call instead of a DFA scan.
 	LiteralPrefix   string
 	LiteralComplete bool
 }
@@ -49,46 +47,31 @@ type templateContext struct {
 	Start              int
 	States             []templateState
 	AcceptIDs          []int
-	EdgeCase           bool // single accepting state with no transitions
-	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
+	EndAcceptIDs       []int // prefix/contains: states that accept only at end of input
+	EdgeCase           bool  // accepting state with no transitions
+	EdgeCaseAlwaysTrue bool  // edge case AND mode is prefix/contains
+	StartAccepts       bool  // start state is accepting (for prefix/contains early-return)
 	NumChains          int
 	HasRanges          bool
 	HasSubmatch        bool // a submatch family is generated
 
 	// Import need-flags. buildContext seeds them with the bool matcher's needs,
-	// gated on the rendered body actually containing a matching loop: the
-	// short-circuit bodies (`return false` for an empty DFA, the empty-string
-	// edge case, the prefix/contains early return when the start state accepts,
-	// and the strings.Contains literal fast path) reference neither
-	// match.InRange nor utf8.DecodeRuneInString, so an unconditional import
-	// would make the generated file fail to compile ("imported and not used").
-	// Generate then ORs in the submatch path's needs (one-pass vs. TDFA) once
-	// that path is known, since it decides which packages the submatch core uses.
 	NeedMatch bool // github.com/wow-look-at-my/go-regex-compiler/match
 	NeedUTF8  bool // unicode/utf8
 
 	// EarlyAccept is set for modes where reaching ANY accepting state proves a
-	// match (prefix: some prefix matched). Transitions into an accepting state
-	// are rendered as "return true" and accepting states are dropped from the
-	// state machine (they become unreachable).
 	EarlyAccept bool
 	acceptSet   map[int]bool // IDs of accepting states (for EarlyAccept rendering)
 	chainHeads  map[int]int  // chain head state ID -> chain index (for counter resets)
 
 	// RestartBody is the statement the contains-mode search loop runs when no
-	// transition matches: restart at the start state, resetting its chain
-	// counter when the start state is itself a compressed chain head.
 	RestartBody string
 
 	// SkipToByte enables the strings.IndexByte fast path in the contains-mode
-	// scan loop: when the search DFA sits in its start state and can only
-	// leave it on one specific byte, memchr to that byte instead of stepping.
 	SkipToByte bool
 	SkipByte   rune
 
-	// LiteralContains replaces the contains-mode body with a single
-	// strings.Contains(input, Literal) call (pattern is one exact literal).
+	// LiteralContains replaces the contains-mode body with a
 	LiteralContains bool
 	Literal         string
 }
@@ -126,10 +109,6 @@ func Generate(w io.Writer, d *dfa.DFA, opts Options) error {
 	}
 
 	// Fold the submatch path's import needs into the bool matcher's (seeded by
-	// buildContext, gated on a matching loop actually being rendered). The
-	// compiled submatch paths (one-pass and TDFA) add match.InRange/utf8 as
-	// they need them. There is no interpreter path, so no generated code ever
-	// imports sync.
 	ctx.NeedMatch = ctx.NeedMatch || (ctx.HasSubmatch && subCtx.HasRanges)
 	ctx.NeedUTF8 = ctx.NeedUTF8 || (ctx.HasSubmatch && !subCtx.ASCII)
 
@@ -175,24 +154,36 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		Start:       d.Start,
 	}
 
+	// A full match asks whether a match ends WITH THE INPUT; prefix and contains
+	accepts := func(s *dfa.State) bool {
+		if opts.Mode == MatchFull {
+			return s.AcceptAtEnd
+		}
+		return s.Accept
+	}
+
 	ctx.acceptSet = make(map[int]bool)
 	for _, s := range d.States {
-		ts := templateState{ID: s.ID, Accept: s.Accept}
+		ts := templateState{ID: s.ID, Accept: accepts(s)}
 		for _, tr := range s.Transitions {
 			ts.Transitions = append(ts.Transitions, templateTransition{
 				Lo: tr.Lo, Hi: tr.Hi, Next: tr.Next,
 			})
 		}
 		ctx.States = append(ctx.States, ts)
-		if s.Accept {
+		if accepts(s) {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
 			ctx.acceptSet[s.ID] = true
 		}
+		// A trailing \b is satisfied by the end of the input, so the match
+		if opts.Mode != MatchFull && s.AcceptAtEnd && !s.Accept {
+			ctx.EndAcceptIDs = append(ctx.EndAcceptIDs, s.ID)
+		}
 	}
 
-	// Edge case: single accepting start state with no transitions (matches only empty string)
+	// Edge case: accepting start state with no transitions (matches only empty string)
 	if len(d.States) > 0 {
-		startAccepts := d.States[d.Start].Accept
+		startAccepts := accepts(d.States[d.Start])
 		ctx.StartAccepts = startAccepts
 		if len(d.States) == 1 && startAccepts && len(d.States[0].Transitions) == 0 {
 			ctx.EdgeCase = true
@@ -201,14 +192,11 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	// Prefix: some prefix matched. Contains: the DFA is a search DFA (built
-	// with dfa.BuildSearch), so an accepting state means some substring
-	// ending at the current position matched.
 	if opts.Mode == MatchPrefix || opts.Mode == MatchContains {
 		ctx.EarlyAccept = true
 	}
 	if ctx.EarlyAccept && !ctx.StartAccepts {
 		// Accepting states are never entered (transitions into them return
-		// true), so drop them from the emitted state machine.
 		var kept []templateState
 		for _, s := range ctx.States {
 			if !s.Accept {
@@ -221,11 +209,6 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	compressChains(&ctx)
 
 	// Chain counters are function-scoped and a DFA loop (or the contains-mode
-	// restart) may re-enter a compressed chain's head state, so every entry
-	// into a chain head from outside the chain must reset that chain's
-	// counter; otherwise the matcher resumes with a stale count and jumps to
-	// the chain terminal too early (e.g. `a{3}(?:ba{3})*`, or a contains-mode
-	// restart into a chain-compressed start state).
 	ctx.chainHeads = make(map[int]int)
 	for _, s := range ctx.States {
 		if s.IsChain {
@@ -248,16 +231,12 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 
 	// Contains fast paths.
 	if opts.Mode == MatchContains && !ctx.StartAccepts && !ctx.EdgeCase {
-		// The whole pattern is one literal: contains IS strings.Contains.
+		// The whole pattern is literal: contains IS strings.Contains.
 		if opts.LiteralComplete && opts.LiteralPrefix != "" {
 			ctx.LiteralContains = true
 			ctx.Literal = opts.LiteralPrefix
 		}
-		// Otherwise, if the scan can only leave the start state on one
-		// specific byte, use strings.IndexByte (memchr) to jump to the next
-		// candidate instead of stepping the DFA byte-by-byte. Chain-compressed
-		// start states are excluded: for those, state == Start does not mean
-		// "at scan start" (the chain counter carries progress).
+		// Otherwise, if the scan can only leave the start state on
 		if !ctx.LiteralContains && ctx.ASCII {
 			for _, s := range ctx.States {
 				if s.ID != ctx.Start {
@@ -273,8 +252,6 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 	}
 
 	// Seed the match/utf8 import needs from the bool matcher: emit them only
-	// when the rendered body actually contains a matching loop (see the field
-	// comment on NeedMatch). Generate ORs in the submatch path's needs later.
 	loopRendered := len(ctx.States) > 0 && !ctx.EdgeCase &&
 		!(ctx.EarlyAccept && ctx.StartAccepts) && !ctx.LiteralContains
 	ctx.NeedMatch = ctx.HasRanges && loopRendered
@@ -284,8 +261,6 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 }
 
 // enterState renders the statement for entering state id from outside it:
-// under EarlyAccept an accepting target proves the match, and a chain-head
-// target must have its chain counter reset before counting starts over.
 func (ctx *templateContext) enterState(id int) string {
 	if ctx.EarlyAccept && ctx.acceptSet[id] {
 		return "return true"
@@ -328,7 +303,7 @@ func compressChains(ctx *templateContext) {
 		}
 	}
 
-	visited := make(map[int]bool)
+	visited := set.New[int]()
 	type chainInfo struct {
 		stateIDs   []int
 		terminalID int
@@ -338,7 +313,7 @@ func compressChains(ctx *templateContext) {
 	chainIdx := 0
 
 	for _, s := range ctx.States {
-		if visited[s.ID] {
+		if visited.Contains(s.ID) {
 			continue
 		}
 
@@ -360,11 +335,11 @@ func compressChains(ctx *templateContext) {
 		}
 
 		chain := []int{s.ID}
-		chainSet := map[int]bool{s.ID: true}
+		chainSet := set.Of[int](s.ID)
 		current := target
 
 		for {
-			if chainSet[current] {
+			if chainSet.Contains(current) {
 				break
 			}
 			cs := stateByID[current]
@@ -393,13 +368,13 @@ func compressChains(ctx *templateContext) {
 				break
 			}
 			chain = append(chain, current)
-			chainSet[current] = true
+			chainSet.Add(current)
 			current = nextTarget
 		}
 
 		if len(chain) >= minChainLength {
 			for _, id := range chain {
-				visited[id] = true
+				visited.Add(id)
 			}
 			chains = append(chains, chainInfo{
 				stateIDs:   chain,
@@ -414,7 +389,7 @@ func compressChains(ctx *templateContext) {
 		return
 	}
 
-	chainMembers := make(map[int]bool)
+	chainMembers := set.New[int]()
 	for _, c := range chains {
 		for i := range ctx.States {
 			if ctx.States[i].ID == c.stateIDs[0] {
@@ -426,13 +401,13 @@ func compressChains(ctx *templateContext) {
 			}
 		}
 		for _, id := range c.stateIDs[1:] {
-			chainMembers[id] = true
+			chainMembers.Add(id)
 		}
 	}
 
 	var filtered []templateState
 	for _, s := range ctx.States {
-		if !chainMembers[s.ID] {
+		if !chainMembers.Contains(s.ID) {
 			filtered = append(filtered, s)
 		}
 	}
@@ -440,7 +415,7 @@ func compressChains(ctx *templateContext) {
 
 	var newAcceptIDs []int
 	for _, id := range ctx.AcceptIDs {
-		if !chainMembers[id] {
+		if !chainMembers.Contains(id) {
 			newAcceptIDs = append(newAcceptIDs, id)
 		}
 	}
@@ -469,10 +444,6 @@ func quoteByte(r rune) string {
 }
 
 // quoteRegex renders the source pattern for use inside a // line comment.
-// The readable backtick form is used when safe; a pattern containing control
-// characters (a literal newline would terminate the comment and split the
-// generated file, and NUL is illegal in Go source) falls back to a
-// double-quoted, escaped, single-line Go string literal.
 func quoteRegex(s string) string {
 	for _, r := range s {
 		if r < ' ' || r == 0x7f {
@@ -485,9 +456,6 @@ func quoteRegex(s string) string {
 func stateTransition(ctx templateContext, s templateState, t templateTransition) string {
 	if s.IsChain {
 		// While counting, control stays in the head state; the jump to the
-		// terminal is the only transition out of the chain (and the terminal
-		// itself may be another chain's head, or this chain's own head when
-		// the DFA loops straight back -- enterState resets the counter).
 		return fmt.Sprintf("if chainCount%d >= %d { %s } else { chainCount%d++ }",
 			s.ChainIndex, s.ChainMaxCount, ctx.enterState(s.ChainTerminal), s.ChainIndex)
 	}
@@ -534,7 +502,7 @@ func groupTransitions(ctx templateContext, s templateState, condFn func(template
 	return groups
 }
 
-// isASCIIOnly returns true if all DFA transitions only involve runes <= 127.
+// isASCIIOnly returns true if all DFA transitions only involve runes <=.
 func isASCIIOnly(d *dfa.DFA) bool {
 	for _, state := range d.States {
 		for _, tr := range state.Transitions {
