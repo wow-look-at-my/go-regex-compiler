@@ -75,7 +75,7 @@ func (b *builder) buildWordAware() (*DFA, error) {
 			if b.search {
 				moved = unionSorted(moved, b.startPending)
 			}
-			// Acceptance on entry has two sources. A match gated on a trailing
+			// Acceptance on entry comes from either of these. A match gated on a trailing
 			// \b ended BEFORE the character being consumed, and only this
 			// transition knows the character that settles it, so it is carried
 			// onto the state being entered. A match needing no such gate is
@@ -159,9 +159,9 @@ func containsMatch(prog *syntax.Prog, set []int) bool {
 
 // wordSplitAlphabet cuts ranges at the word-class edges so each range is
 // uniformly word or non-word, over every rune. Totality is what a boundary
-// needs: the character that settles a trailing \b is one the pattern never
-// consumes, so an alphabet built from the consuming instructions alone cannot
-// see it. In search mode it is needed a second time, because the generated
+// needs: the character that settles a trailing \b is a character the pattern
+// never consumes, so an alphabet built from the consuming instructions alone
+// cannot see it. Search mode needs it again, because the generated
 // switch restarts the scan on its default branch and a restart carries no
 // knowledge of the character that caused it. Ranges that lead nowhere and
 // complete no match are dropped by the caller.
@@ -176,9 +176,9 @@ func (b *builder) wordSplitAlphabet(consuming []RuneRange) []RuneRange {
 	}
 	sort.Slice(cuts, func(i, j int) bool { return cuts[i] < cuts[j] })
 
-	// Two neighbours of the same word class answer \b identically, so joining
-	// them costs a transition and changes nothing -- unless one of them is a
-	// rune the pattern consumes, where the two differ in where they go.
+	// Neighbouring ranges of the same word class answer \b identically, so
+	// joining them costs a transition and changes nothing -- unless the pattern
+	// consumes a rune in either, where they differ in where they go.
 	consumed := func(r rune) bool {
 		for _, rr := range consuming {
 			if rr.Lo <= r && r <= rr.Hi {

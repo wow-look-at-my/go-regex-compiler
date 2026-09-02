@@ -88,7 +88,7 @@ func TestRunUnsupportedAssertions(t *testing.T) {
 
 // A word boundary is decided by the pair of characters around it, which the DFA
 // resolves per outgoing rune range, so \b compiles in every position and every
-// mode. foo\bbar is one of those: it matches nothing, and it compiles.
+// mode. foo\bbar matches nothing, and it still compiles.
 func TestRunWordBoundaryCompilesAnywhere(t *testing.T) {
 	for _, tc := range []struct{ name, regex, mode string }{
 		{"interior", `foo\bbar`, "full"},
