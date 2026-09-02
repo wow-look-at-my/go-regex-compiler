@@ -24,5 +24,3 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@master
         with:
           generate: f768119ca80a
-          # The APE covers linux and windows/amd64; darwin stays native, since the pipeline wedges under it on macOS.
-          targets: 'cosmo,darwin/amd64,darwin/arm64,windows/arm64'
