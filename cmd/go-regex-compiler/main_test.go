@@ -73,7 +73,6 @@ func TestRunUnsupportedAssertions(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"mid_word_boundary", []string{"--regex", `foo\bbar`}},
 		{"mid_dollar", []string{"--regex", `a$b`}},
 		{"dollar_in_prefix_mode", []string{"--regex", `ab$`, "--match", "prefix"}},
 		{"caret_in_contains_mode", []string{"--regex", `^abc`, "--match", "contains"}},
@@ -83,6 +82,23 @@ func TestRunUnsupportedAssertions(t *testing.T) {
 			_, err := execute(t, tc.args...)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "regex", "error should explain the rejected construct")
+		})
+	}
+}
+
+// A word boundary is decided by the pair of characters around it, which the DFA
+// resolves per outgoing rune range, so \b compiles in every position and every
+// mode. foo\bbar is one of those: it matches nothing, and it compiles.
+func TestRunWordBoundaryCompilesAnywhere(t *testing.T) {
+	for _, tc := range []struct{ name, regex, mode string }{
+		{"interior", `foo\bbar`, "full"},
+		{"leading_contains", `\bcat\b`, "contains"},
+		{"trailing_prefix", `\bused to\b`, "prefix"},
+		{"negated_interior", `foo\Bbar`, "full"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := execute(t, "--regex", tc.regex, "--match", tc.mode)
+			require.NoError(t, err)
 		})
 	}
 }

@@ -50,9 +50,10 @@ type templateContext struct {
 	Start              int
 	States             []templateState
 	AcceptIDs          []int
-	EdgeCase           bool // single accepting state with no transitions
-	EdgeCaseAlwaysTrue bool // edge case AND mode is prefix/contains
-	StartAccepts       bool // start state is accepting (for prefix/contains early-return)
+	EndAcceptIDs       []int // prefix/contains: states that accept only at end of input
+	EdgeCase           bool  // single accepting state with no transitions
+	EdgeCaseAlwaysTrue bool  // edge case AND mode is prefix/contains
+	StartAccepts       bool  // start state is accepting (for prefix/contains early-return)
 	NumChains          int
 	HasRanges          bool
 	HasSubmatch        bool // a submatch family is generated
@@ -199,6 +200,13 @@ func buildContext(d *dfa.DFA, opts Options) templateContext {
 		if accepts(s) {
 			ctx.AcceptIDs = append(ctx.AcceptIDs, s.ID)
 			ctx.acceptSet[s.ID] = true
+		}
+		// A trailing \b is satisfied by the end of the input, so the match
+		// completes with no further rune to consume and no accepting state is
+		// ever entered. Prefix and contains therefore test the state they stop
+		// in, as well as the states they pass through.
+		if opts.Mode != MatchFull && s.AcceptAtEnd && !s.Accept {
+			ctx.EndAcceptIDs = append(ctx.EndAcceptIDs, s.ID)
 		}
 	}
 

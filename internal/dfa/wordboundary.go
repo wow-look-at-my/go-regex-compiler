@@ -48,7 +48,8 @@ func isWordRune(r rune) bool {
 func (b *builder) buildWordAware() (*DFA, error) {
 	b.startPending = []int{b.prog.Start}
 	start := b.getOrCreateWordState(b.startPending, false,
-		b.closureHasMatch(b.startPending, false, false),
+		b.closureHasMatch(b.startPending, false, true) &&
+			b.closureHasMatch(b.startPending, false, false),
 		b.closureHasMatch(b.startPending, false, false))
 	b.dfa.Start = start
 
@@ -74,12 +75,17 @@ func (b *builder) buildWordAware() (*DFA, error) {
 			if b.search {
 				moved = unionSorted(moved, b.startPending)
 			}
-			if len(moved) == 0 {
+			// Acceptance on entry has two sources. A match gated on a trailing
+			// \b ended BEFORE the character being consumed, and only this
+			// transition knows the character that settles it, so it is carried
+			// onto the state being entered. A match needing no such gate is
+			// already certain on arrival, which is what both readings of the
+			// NEXT character agreeing proves.
+			accept := containsMatch(b.prog, closed) ||
+				(b.closureHasMatch(moved, curWord, true) && b.closureHasMatch(moved, curWord, false))
+			if len(moved) == 0 && !accept {
 				continue
 			}
-			// The match this transition may complete ended BEFORE the character
-			// being consumed, so it is recorded on the state being entered.
-			accept := containsMatch(b.prog, closed)
 			next := b.getOrCreateWordState(moved, curWord, accept,
 				b.closureHasMatch(moved, curWord, false))
 			if len(b.dfa.States) > MaxStates {
@@ -152,17 +158,17 @@ func containsMatch(prog *syntax.Prog, set []int) bool {
 }
 
 // wordSplitAlphabet cuts ranges at the word-class edges so each range is
-// uniformly word or non-word, and in search mode widens the result to cover
-// every rune. Totality matters there: the generated switch restarts the scan on
-// its default branch, and a restart carries no knowledge of the character that
-// caused it, which is exactly the fact a word boundary needs.
-func (b *builder) wordSplitAlphabet(ranges []RuneRange) []RuneRange {
+// uniformly word or non-word, over every rune. Totality is what a boundary
+// needs: the character that settles a trailing \b is one the pattern never
+// consumes, so an alphabet built from the consuming instructions alone cannot
+// see it. In search mode it is needed a second time, because the generated
+// switch restarts the scan on its default branch and a restart carries no
+// knowledge of the character that caused it. Ranges that lead nowhere and
+// complete no match are dropped by the caller.
+func (b *builder) wordSplitAlphabet(consuming []RuneRange) []RuneRange {
 	bounds := []rune{'0', '9' + 1, 'A', 'Z' + 1, '_', '_' + 1, 'a', 'z' + 1}
-	if b.search {
-		ranges = append(ranges, RuneRange{Lo: 0, Hi: unicode.MaxRune})
-	}
-	var cuts []rune
-	for _, rr := range ranges {
+	cuts := []rune{0, unicode.MaxRune + 1}
+	for _, rr := range consuming {
 		cuts = append(cuts, rr.Lo, rr.Hi+1)
 	}
 	for _, c := range bounds {
@@ -170,8 +176,11 @@ func (b *builder) wordSplitAlphabet(ranges []RuneRange) []RuneRange {
 	}
 	sort.Slice(cuts, func(i, j int) bool { return cuts[i] < cuts[j] })
 
-	covered := func(r rune) bool {
-		for _, rr := range ranges {
+	// Two neighbours of the same word class answer \b identically, so joining
+	// them costs a transition and changes nothing -- unless one of them is a
+	// rune the pattern consumes, where the two differ in where they go.
+	consumed := func(r rune) bool {
+		for _, rr := range consuming {
 			if rr.Lo <= r && r <= rr.Hi {
 				return true
 			}
@@ -182,10 +191,12 @@ func (b *builder) wordSplitAlphabet(ranges []RuneRange) []RuneRange {
 	var out []RuneRange
 	for i := 0; i+1 < len(cuts); i++ {
 		lo, hi := cuts[i], cuts[i+1]-1
-		if lo > hi || !covered(lo) {
+		if lo > hi {
 			continue
 		}
-		if n := len(out); n > 0 && out[n-1].Hi+1 == lo && isWordRune(out[n-1].Lo) == isWordRune(lo) {
+		if n := len(out); n > 0 && out[n-1].Hi+1 == lo &&
+			isWordRune(out[n-1].Lo) == isWordRune(lo) &&
+			!consumed(out[n-1].Lo) && !consumed(lo) {
 			out[n-1].Hi = hi
 			continue
 		}

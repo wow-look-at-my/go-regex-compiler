@@ -9,8 +9,8 @@ import (
 )
 
 // simulate runs a built DFA over input and reports the verdict for the mode.
-// prefix and contains read Accept on entry; full reads AcceptAtEnd on the state
-// the input lands in.
+// prefix and contains read Accept on entry; every mode reads AcceptAtEnd on the
+// state the input lands in.
 func simulate(d *DFA, input string, mode string) bool {
 	state := d.States[d.Start]
 	if mode != "full" && state.Accept {
@@ -36,10 +36,9 @@ func simulate(d *DFA, input string, mode string) bool {
 			return true
 		}
 	}
-	if mode == "full" {
-		return state.AcceptAtEnd
-	}
-	return false
+	// Every mode also asks the final state: a trailing \b can be satisfied by
+	// the end of the input, which leaves no rune to enter an accepting state on.
+	return state.AcceptAtEnd
 }
 
 func buildFor(t *testing.T, pattern, mode string) *DFA {

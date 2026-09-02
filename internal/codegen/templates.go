@@ -47,6 +47,7 @@ const allTemplates = headerTemplate +
 	utf8SearchLoopTemplate +
 	statesTemplate +
 	acceptCheckTemplate +
+	endAcceptCheckTemplate +
 	submatchFuncTemplate +
 	submatchStringFuncTemplate +
 	submatchNamesFuncTemplate +
@@ -149,7 +150,7 @@ const prefixBodyTemplate = `
 {{- else -}}
 {{ template "utf8Loop" . }}
 {{- end }}
-	return false
+{{ template "endAcceptCheck" . }}
 {{- end }}
 {{- end -}}
 `
@@ -180,7 +181,7 @@ const containsBodyTemplate = `
 {{- else -}}
 {{ template "utf8SearchLoop" . }}
 {{- end }}
-	return false
+{{ template "endAcceptCheck" . }}
 {{- end }}
 {{- end -}}
 `
@@ -280,6 +281,29 @@ const statesTemplate = `
 			default: {{ $noMatch }}
 			}
 {{- end }}{{ end }}
+{{- end -}}
+`
+
+// ---------- end-of-input accept check ----------
+//
+// Prefix and contains report a match on ENTERING an accepting state, which
+// needs a rune to consume. A pattern ending in \b can instead be completed by
+// the end of the input, so the state the loop stops in is tested too.
+
+const endAcceptCheckTemplate = `
+{{- define "endAcceptCheck" -}}
+{{- if eq (len .EndAcceptIDs) 0 }}
+	return false
+{{- else if eq (len .EndAcceptIDs) 1 }}
+	return state == {{ index .EndAcceptIDs 0 }}
+{{- else }}
+	switch state {
+	case {{ range $i, $id := .EndAcceptIDs }}{{ if $i }}, {{ end }}{{ $id }}{{ end }}:
+		return true
+	default:
+		return false
+	}
+{{- end }}
 {{- end -}}
 `
 
