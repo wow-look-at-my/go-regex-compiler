@@ -39,7 +39,7 @@ func TestValidateAssertionsAccepted(t *testing.T) {
 		{"trailing_wordb_after_word_full", `(\w+)\b`, true, true},
 		{"leading_wordb_before_word_capture", `(\babc)`, true, true},
 		{"leading_wordb_prefix", `\babc`, true, false},
-		// \B where both sides are always word characters:
+		// \B where sides are always word characters:
 		{"nonwordb_between_words_full", `a\Bb`, true, true},
 	}
 	for _, tc := range cases {
@@ -65,7 +65,6 @@ func TestValidateAssertionsRejected(t *testing.T) {
 		// Prefix mode used to treat ab$ like ab (matched "abc").
 		{"trailing_dollar_prefix", `ab$`, true, false, "end"},
 		// Prefix mode: what follows the match is unknown, so \b at the end
-		// cannot be verified (used to match "abc1").
 		{"trailing_wordb_prefix", `[a-z]+\b`, true, false, `\b`},
 		// Contains mode used to match "xabc" for ^abc.
 		{"leading_caret_contains", `^abc`, false, false, "contains"},
@@ -79,13 +78,11 @@ func TestValidateAssertionsRejected(t *testing.T) {
 		// Mid-pattern multiline anchors depend on neighboring newlines.
 		{"mid_multiline_caret_full", "a\n(?m:^b)", true, true, "(?m)^"},
 		{"mid_multiline_dollar_full", "(?m:a$)\nb", true, true, "(?m)$"},
-		// \b that can never hold (word on both sides) is also rejected.
+		// \b that can never hold (word on sides) is also rejected.
 		{"wordb_never_holds", `a\bb`, true, true, `\b`},
 		// Interior \b whose following side is a mixed class (.) is conditional,
-		// so it must error rather than compile: the compiled path folds only
-		// PROVABLY-always-true interior boundaries.
 		{"mid_wordb_before_word_mixed_after", `a\b.`, true, true, `\b`},
-		// Interior \B with a mixed class on both sides is likewise conditional.
+		// Interior \B with a mixed class on sides is likewise conditional.
 		{"mid_nonwordb_mixed_sides", `.\B.`, true, true, `\B`},
 		// Loops make a "leading" anchor reachable mid-match.
 		{"caret_in_loop_full", `(^a)+`, true, true, "^"},

@@ -9,9 +9,6 @@ import (
 )
 
 // interpreterMarkers are substrings that only appear in a run-time NFA
-// interpreter: an instruction/thread table, an op-dispatch switch, an
-// epsilon-closure helper, or a scratch pool. A compiled matcher (one-pass or
-// TDFA) contains none of them — it is pure `switch state` control flow.
 var interpreterMarkers = []string{
 	"sync.Pool",     // scratch/object pool
 	"addThread",     // epsilon-closure that walks the program
@@ -26,9 +23,6 @@ var interpreterMarkers = []string{
 }
 
 // TestNoInterpreterInFixtures asserts that EVERY generated fixture matcher in
-// this package compiles to a state machine with no interpreter. This is the
-// mandate: no generated Find function walks a program, a thread list, or a
-// pool at run time.
 func TestNoInterpreterInFixtures(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.Nil(t, err)

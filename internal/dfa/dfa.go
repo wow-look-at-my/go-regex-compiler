@@ -11,10 +11,11 @@ type Transition struct {
 	Next   int // target DFA state ID
 }
 
-// State is a single DFA state.
+// State is a DFA state.
 type State struct {
 	ID          int
-	Accept      bool         // true if this is a match/accepting state
+	Accept      bool         // a match ended on entry to this state
+	AcceptAtEnd bool         // a match ends here when the input does
 	Transitions []Transition // sorted by Lo
 }
 
