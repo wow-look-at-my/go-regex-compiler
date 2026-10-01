@@ -8,15 +8,12 @@ import (
 // Result holds the parsed NFA program and metadata about the regex.
 type Result struct {
 	Prog      *syntax.Prog
-	NumGroups int // Number of capture groups (not counting group 0 = whole match)
+	NumGroups int // Number of capture groups (not counting group = whole match)
 	// GroupNames holds the name of each capture group, indexed by group number.
-	// Index 0 (the whole match) is always "". An unnamed group has "". The slice
-	// length is NumGroups+1, mirroring regexp.Regexp.SubexpNames.
 	GroupNames []string
 }
 
 // Parse takes a regex pattern and returns a compiled NFA program.
-// It uses Go's regexp/syntax package to parse, simplify, and compile the pattern.
 func Parse(pattern string) (*syntax.Prog, error) {
 	r, err := ParseResult(pattern)
 	if err != nil {
@@ -26,7 +23,6 @@ func Parse(pattern string) (*syntax.Prog, error) {
 }
 
 // ParseResult takes a regex pattern and returns the NFA program plus metadata
-// including the number of capture groups.
 func ParseResult(pattern string) (*Result, error) {
 	re, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
@@ -36,8 +32,6 @@ func ParseResult(pattern string) (*Result, error) {
 	numGroups := countCaptures(re)
 
 	// Collect group names from the un-simplified AST (Simplify may rewrite
-	// capture nodes). Index = group number, value = name ("" for unnamed),
-	// length NumGroups+1 to mirror regexp.Regexp.SubexpNames.
 	names := make([]string, numGroups+1)
 	collectGroupNames(re, names)
 
@@ -50,8 +44,6 @@ func ParseResult(pattern string) (*Result, error) {
 }
 
 // collectGroupNames walks the regex AST and records each capture group's name
-// at its group index. Go's syntax.Parse already rejects duplicate and empty
-// explicit names, so no validation is needed here.
 func collectGroupNames(re *syntax.Regexp, names []string) {
 	if re.Op == syntax.OpCapture && re.Cap >= 0 && re.Cap < len(names) {
 		names[re.Cap] = re.Name

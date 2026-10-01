@@ -55,7 +55,7 @@ func TestBuildAlternation(t *testing.T) {
 	d, err := Build(prog)
 	require.NoError(t, err)
 
-	// May be merged into a single range [a,b] by alphabet partitioning
+	// May be merged into a range [a,b] by alphabet partitioning
 	assert.NotEmpty(t, d.States[d.Start].Transitions, "start state should have transitions for 'a|b'")
 	assert.True(t, hasAcceptingState(d), "should have an accepting state")
 }
@@ -123,8 +123,7 @@ func TestBuildCaseInsensitive(t *testing.T) {
 }
 
 func TestExpandFoldCaseNoCap(t *testing.T) {
-	// U+212A (KELVIN SIGN) sits at offset 0x12A (> 256) from U+2000; its fold
-	// orbit {k, K} must not be dropped by any per-range expansion cap.
+	// U+212A (KELVIN SIGN) sits at offset 0x12A (>) from U+; its fold
 	got := ExpandFoldCase([]rune{0x2000, 0x2200})
 	assert.True(t, rangesContain(got, 'k'), "fold expansion must include 'k' (fold of U+212A)")
 	assert.True(t, rangesContain(got, 'K'), "fold expansion must include 'K' (fold of U+212A)")
@@ -165,9 +164,6 @@ func TestMergeRuneRanges(t *testing.T) {
 }
 
 // simulateSearch runs a search DFA (BuildSearch) over input the way the
-// generated contains-mode code does: transition on each rune, restart at the
-// start state when no transition matches, and report true as soon as an
-// accepting state is entered.
 func simulateSearch(d *DFA, input string) bool {
 	if d.States[d.Start].Accept {
 		return true
@@ -194,9 +190,7 @@ func TestBuildSearchSeedsStartEverywhere(t *testing.T) {
 	d, err := BuildSearch(prog)
 	require.NoError(t, err)
 
-	// The classic overlap case: the match at offset 1 starts inside the
-	// failed attempt at offset 0. A restart-on-failure scanner misses it;
-	// the search DFA must not.
+	// The classic overlap case: the match at offset starts inside the
 	assert.True(t, simulateSearch(d, "aaab"))
 	assert.True(t, simulateSearch(d, "aab"))
 	assert.True(t, simulateSearch(d, "xxaabyy"))

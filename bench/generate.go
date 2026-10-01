@@ -1,3 +1,3 @@
 package bench
 
-//go:generate go run generate_fixtures.go
+//go:generate go run -exec sh ./benchgen

@@ -1,16 +1,5 @@
 package codegen
 
-// This file holds the text/template for the COMPILED tagged-DFA (TDFA) submatch
-// matcher: the <FuncName>Index core emitted when the pattern has genuine capture
-// ambiguity the one-pass path rejects (see tdfa.go / tdfa_emit.go). Like the
-// one-pass matcher it emits NO instruction table, NO op-dispatch switch, NO
-// live-position list, and NO sync.Pool — the automaton IS the Go control flow.
-// The difference is the capture store: instead of one caps slot per group, each
-// live config owns an isolated block of an integer register file, transitions
-// carry fixed set/copy register operations, and the accepting state reads the
-// winning config's block. Ambiguity is resolved at construction time, so there
-// is nothing to interpret at run time.
-
 const tdfaIndexFuncTemplate = `
 {{- define "tdfaIndexFunc" -}}
 // {{ .IndexFuncName }} returns the submatch index slice for the regex {{ quoteRegex .Regex }},

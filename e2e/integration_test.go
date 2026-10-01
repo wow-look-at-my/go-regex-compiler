@@ -209,8 +209,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			// Regression: chain-compression counters must reset when a DFA
-			// loop re-enters a compressed chain head (a{3} is compressed, and
-			// (?:ba{3})* re-enters it).
 			name: `a{3}(?:ba{3})*`, matchFn: MatchChainReentry,
 			cases: []testCase{
 				{"aaa", true},
@@ -297,8 +295,6 @@ func TestIntegrationPrefix(t *testing.T) {
 		},
 		{
 			// Regression: the shorter alternative must count even though the
-			// DFA keeps walking toward the longer one. The prefix "a" matches
-			// even when the walk continues into the non-accepting "ab" state.
 			name: "a|abc", matchFn: MatchPrefixAlt,
 			cases: []testCase{
 				{"a", true},
@@ -313,9 +309,6 @@ func TestIntegrationPrefix(t *testing.T) {
 		},
 		{
 			// Regression: the match passes THROUGH an accepting state ("a"
-			// accepts) before the DFA dies trying to extend to "abc". The old
-			// codegen only tested the state the DFA died in and returned false
-			// for "ab" and "abx" despite the matching prefix "a".
 			name: "a(bc)?", matchFn: MatchPrefixOptional,
 			cases: []testCase{
 				{"a", true},
@@ -329,7 +322,6 @@ func TestIntegrationPrefix(t *testing.T) {
 		},
 		{
 			// Regression: start state accepting means the empty prefix always
-			// matches, whatever the input.
 			name: "a*", matchFn: MatchPrefixAStar,
 			cases: []testCase{
 				{"", true},
@@ -389,12 +381,11 @@ func TestIntegrationContains(t *testing.T) {
 		},
 		{
 			// Regression: self-overlapping literal. A failed attempt must not
-			// swallow the start of the real match.
 			name: "aab", matchFn: MatchContainsOverlap,
 			cases: []testCase{
 				{"aab", true},
-				{"aaab", true},  // match at offset 1, overlapping the failed attempt at 0
-				{"aaaab", true}, // match at offset 2
+				{"aaab", true},  // match at offset, overlapping the failed attempt at
+				{"aaaab", true}, // match at offset
 				{"xaabx", true},
 				{"ab", false},
 				{"aa", false},
@@ -403,13 +394,12 @@ func TestIntegrationContains(t *testing.T) {
 		},
 		{
 			// Same overlap regression through the DFA scan loop (the pattern
-			// is not a pure literal, so no strings.Contains shortcut).
 			name: "aa[bc]", matchFn: MatchContainsOverlapClass,
 			cases: []testCase{
 				{"aab", true},
 				{"aac", true},
-				{"aaab", true},  // match at offset 1, inside the failed attempt at 0
-				{"aaaac", true}, // match at offset 2
+				{"aaab", true},  // match at offset, inside the failed attempt at
+				{"aaaac", true}, // match at offset
 				{"aad", false},
 				{"ab", false},
 				{"", false},
@@ -417,10 +407,6 @@ func TestIntegrationContains(t *testing.T) {
 		},
 		{
 			// Regression: the search DFA's restart default re-enters the
-			// chain-compressed start state (aaa is a compressed chain whose
-			// head IS the start state); the restart must reset the chain
-			// counter or a partial "aa" before a mismatch is counted toward
-			// the next attempt.
 			name: "aaa[bc]", matchFn: MatchContainsChainRestart,
 			cases: []testCase{
 				{"aaab", true},
@@ -439,7 +425,7 @@ func TestIntegrationContains(t *testing.T) {
 				{"b", true},
 				{"aaab", true},
 				{"xxaab", true},
-				{strings.Repeat("a", 5000), false}, // worst case of the old O(n^2) loop
+				{strings.Repeat("a", 5000), false}, // worst case of the old O(n^) loop
 				{"", false},
 			},
 		},
@@ -449,7 +435,7 @@ func TestIntegrationContains(t *testing.T) {
 				{"café", true},
 				{"naïve tea", true},
 				{"plain ascii", false},
-				{"\xff\xfe", false}, // invalid UTF-8 is not in the class
+				{"\xff\xfe", false}, // invalid UTF- is not in the class
 				{"", false},
 			},
 		},
@@ -467,10 +453,6 @@ func TestIntegrationContains(t *testing.T) {
 }
 
 // TestIntegrationAssertions covers the empty-width assertion placements that
-// dfa.ValidateAssertions ACCEPTS (provable no-ops for the mode); expectations
-// mirror stdlib regexp with the mode's anchoring. Placements the validator
-// cannot honor are rejected at generation time instead of being miscompiled
-// (see internal/dfa/assertions_test.go for the rejection coverage).
 func TestIntegrationAssertions(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -479,7 +461,6 @@ func TestIntegrationAssertions(t *testing.T) {
 	}{
 		{
 			// Full match: (?m)$ may accept before a newline, but full mode
-			// still has to consume the whole input, so it behaves like a\z.
 			name: `full (?m)a$`, matchFn: MatchMLineADollar,
 			cases: []testCase{
 				{"a", true},
@@ -503,7 +484,7 @@ func TestIntegrationAssertions(t *testing.T) {
 
 type submatchCase struct {
 	input  string
-	groups []string // nil means no match, else groups[0]=full match, groups[1..]=captures
+	groups []string // nil means no match, else groups[]=full match, groups[..]=captures
 }
 
 func TestIntegrationSubmatch(t *testing.T) {

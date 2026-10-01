@@ -37,12 +37,12 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 		{`(foo|bar)baz`, true},
 		{`([a-z]+)(\.[a-z]+)*`, true},
 		{`(?P<a>x)?(?P<b>y)`, true},
-		{`(a|ab)(c)`, true},       // disjoint after first token: 'b' vs 'c'
+		{`(a|ab)(c)`, true},       // disjoint after token: 'b' vs 'c'
 		{`(\babc)`, true},         // leading \b: resolved as a start gate
 		{`(\w+)\b`, true},         // trailing \b: resolved as an accept gate
 		{`^(\d+)-(\d+)$`, true},   // ^ and $ text anchors fold away for full match
 		{`(a\Bb)`, true},          // interior \B (always true between word chars) folds to a no-op
-		{`(foo\Bbar)`, true},      // interior \B inside a single group
+		{`(foo\Bbar)`, true},      // interior \B inside a group
 		{`(foo\B)(bar)`, true},    // interior \B at a group boundary (left group)
 		{`(foo)(\Bbar)`, true},    // interior \B at a group boundary (right group)
 		{`([^"]*)"(\d+)"`, false}, // negated class -> non-ASCII -> rune path
@@ -56,7 +56,7 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 			assert.Equal(t, (n+1)*2, d.numSlots)
 			assert.Equal(t, tt.ascii, d.ascii, "ascii mismatch for %q", tt.pattern)
 			assert.NotEmpty(t, d.states)
-			// At least one state must accept (the pattern is matchable).
+			// At least state must accept (the pattern is matchable).
 			accepting := false
 			for _, s := range d.states {
 				if s.accept {
@@ -68,15 +68,10 @@ func TestBuildCapDFAOnepass(t *testing.T) {
 	}
 }
 
-// TestBuildCapDFAFallback lists patterns the one-pass path must decline
-// (ok=false) so the caller moves on to the TDFA register machine. Interior
-// empty-width assertions are NOT in this list: dfa.ValidateAssertions vets those
-// before codegen (an always-true \b/\B folds to a no-op, a conditional one like
-// (a)\b(.) errors), so buildCapDFA trusts the surviving assertion instead of
-// re-rejecting it here — the same way it trusts the match mode for text anchors.
+// TestBuildCapDFAFallback lists patterns the -pass path must decline
 func TestBuildCapDFAFallback(t *testing.T) {
 	patterns := []string{
-		`(a*)(a*)`,  // ambiguous captures: both groups match 'a'
+		`(a*)(a*)`,  // ambiguous captures: groups match 'a'
 		`(?i)(abc)`, // fold-case class (unsupported in compiled path)
 	}
 	for i, p := range patterns {
@@ -89,8 +84,7 @@ func TestBuildCapDFAFallback(t *testing.T) {
 }
 
 func TestBuildCapDFAAnyRune(t *testing.T) {
-	// (.*) with (?s) uses opRuneAny; without it, opRuneAnyNotNL. Both must
-	// compile via the any-rune edge (emitted as the switch default / != '\n').
+	// (.*) with (?s) uses opRuneAny; without it, opRuneAnyNotNL. must
 	for i, p := range []string{`(a)(.*)`, `(?s)(a)(.*)`} {
 		t.Run(fmt.Sprintf("any%d", i), func(t *testing.T) {
 			prog, n := compileProg(t, p)
@@ -131,7 +125,7 @@ func TestEdgesDisjoint(t *testing.T) {
 		{ranges: []capRange{{'a', 'z'}}},
 		{anyRune: true},
 	}))
-	// A single edge with multiple ranges is fine.
+	// A edge with multiple ranges is fine.
 	assert.True(t, edgesDisjoint([]capEdge{
 		{ranges: []capRange{{'a', 'z'}, {'0', '9'}}},
 	}))
@@ -149,18 +143,15 @@ func TestOnepassEmitHelpers(t *testing.T) {
 	c, _ = rangeCond('a', 'z', false)
 	assert.Equal(t, "match.InRange(r, 'a', 'z')", c)
 
-	// Edge body writes the current offset i and skips group-0 slots.
+	// Edge body writes the current offset i and skips group- slots.
 	assert.Equal(t, "caps[2] = i; state = 5", onepassEdgeBody([]int{0, 2}, 5))
 	assert.Equal(t, "state = 5", onepassEdgeBody([]int{0, 1}, 5))
-	// Accept body writes len(input) and skips group-0 slots.
+	// Accept body writes len(input) and skips group- slots.
 	assert.Equal(t, "caps[5] = len(input)", onepassAcceptBody([]int{1, 5}))
 	assert.Equal(t, "", onepassAcceptBody([]int{0, 1}))
 }
 
 // TestGenerateOnepassGates verifies the compiled path handles empty-width
-// boundary assertions: a leading \b becomes a start gate, a trailing \b an
-// accept gate (both emitting a word-char helper), and ^/$ text anchors fold away
-// entirely for full-match. All stay COMPILED (no interpreter).
 func TestGenerateOnepassGates(t *testing.T) {
 	t.Run("leading_wordboundary", func(t *testing.T) {
 		out := generateNamedSubmatch(t, `(\babc)`, false)
@@ -179,7 +170,6 @@ func TestGenerateOnepassGates(t *testing.T) {
 	})
 	t.Run("text_anchors_fold", func(t *testing.T) {
 		// ^ and $ are always satisfied at the ends of a full match, so no gate
-		// code (no word helper, no firstRune/lastRune) is emitted.
 		out := generateNamedSubmatch(t, `^(\d+)-(\d+)$`, false)
 		assertValidGo(t, out)
 		assert.NotContains(t, out, "addThread")
@@ -196,8 +186,6 @@ func TestDedupInts(t *testing.T) {
 }
 
 // TestGenerateSubmatchTDFA verifies an ambiguous-capture pattern — which the
-// one-pass path rejects — compiles to the tagged-DFA register machine, NOT an
-// interpreter: no program table, no live-position list, no sync.Pool.
 func TestGenerateSubmatchTDFA(t *testing.T) {
 	out := generateNamedSubmatch(t, `(a*)(a*)`, false)
 	assertValidGo(t, out)
@@ -214,20 +202,15 @@ func TestGenerateSubmatchTDFA(t *testing.T) {
 }
 
 // TestInteriorNegWordBoundaryFolds verifies that an always-true interior \B
-// (proven safe by dfa.ValidateAssertions) is folded to a no-op by BOTH compiled
-// paths, so patterns like (\w+\B\w+) — ambiguous, hence TDFA — and (a\Bb) — a
-// literal sequence, hence one-pass — compile to a state machine with NO
-// interpreter. These are the exact patterns the interpreter used to serve.
 func TestInteriorNegWordBoundaryFolds(t *testing.T) {
-	// One-pass: (a\Bb) folds to (ab).
+	// -pass: (a\Bb) folds to (ab).
 	for _, p := range []string{`(a\Bb)`, `(foo\B)(bar)`} {
 		prog, n := compileProg(t, p)
 		d, ok := buildCapDFA(prog, n)
 		require.True(t, ok, "expected one-pass for %q after folding interior \\B", p)
 		require.NotNil(t, d)
 	}
-	// Ambiguous (adjacent \w+): the one-pass path declines, the TDFA path
-	// compiles it after skipping the always-true \B in the closure.
+	// Ambiguous (adjacent \w+): the -pass path declines, the TDFA path
 	for _, p := range []string{`(\w+\B\w+)`, `(\w+)\B(\w+)`} {
 		prog, n := compileProg(t, p)
 		_, okOne := buildCapDFA(prog, n)
@@ -247,8 +230,7 @@ func TestInteriorNegWordBoundaryFolds(t *testing.T) {
 	}
 }
 
-// TestBuildSubmatchContextTDFA verifies a pattern the one-pass path rejects
-// compiles via the TDFA register machine: TDFA is set and Onepass is not.
+// TestBuildSubmatchContextTDFA verifies a pattern the -pass path rejects
 func TestBuildSubmatchContextTDFA(t *testing.T) {
 	prog, n := compileProg(t, `(a*)(a*)`)
 	ctx, err := buildSubmatchContext(SubmatchOptions{

@@ -81,7 +81,6 @@ func BenchmarkCompiledRegexp(b *testing.B) {
 }
 
 // containsCases benchmark unanchored (contains-mode) matchers against
-// unanchored regexp. Haystacks are large so the scan cost dominates.
 var containsCases = []struct {
 	name      string
 	pattern   string
@@ -95,7 +94,6 @@ var containsCases = []struct {
 	{"contains_ssn_miss", `\d{3}-\d{2}-\d{4}`, ContainsSSN,
 		strings.Repeat("phone 555-01x1 is not an ssn ", 300)},
 	// Worst case of the old restart-at-every-position loop: every start
-	// position scanned to the end of the input (O(n^2)).
 	{"contains_astarb_miss", "a*b", ContainsAStarB, strings.Repeat("a", 10000)},
 }
 

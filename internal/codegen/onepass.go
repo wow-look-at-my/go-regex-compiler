@@ -1,21 +1,5 @@
 package codegen
 
-// This file implements onepass capture-automaton construction: turning a
-// Thompson NFA program (from regexp/syntax) into a DETERMINISTIC, capture-
-// annotated DFA whose transitions carry the capture-slot writes that must
-// happen when they are taken. It is the analysis stage behind the *compiled*
-// submatch matcher (see templates_onepass.go); the emitted code is a plain
-// `switch state` automaton with inline `caps[k] = pos` writes and NO interpreter
-// (no prog table, no thread lists, no epsilon-closure loop at run time).
-//
-// The idea mirrors the standard library's onepass analysis (regexp/onepass.go):
-// a pattern is "one-pass" if, at every point, the next input rune uniquely
-// selects the next instruction, so no backtracking or parallel NFA threads are
-// ever needed. When that holds, the whole match is a single deterministic walk
-// and captures can be baked onto the transitions. When it does not hold (real
-// capture ambiguity), buildCapDFA returns ok=false and the caller falls back to
-// the TDFA register machine (tdfa.go); there is no run-time interpreter.
-
 import (
 	"regexp/syntax"
 	"sort"
@@ -24,8 +8,6 @@ import (
 )
 
 // capMaxStates bounds the compiled automaton; past it we give up and fall back
-// (mirrors dfa.MaxStates). Pending-capture annotations are part of a state's
-// identity, so a pathological pattern could in principle blow up; this caps it.
 const capMaxStates = 10000
 
 // capRange is an inclusive [lo,hi] rune range of a consuming instruction's class.
@@ -33,34 +15,22 @@ type capRange struct{ lo, hi rune }
 
 // Empty-width assertion bits (mirror regexp/syntax.EmptyOp).
 const (
-	emptyBeginLine      = int(syntax.EmptyBeginLine)      // 1
-	emptyEndLine        = int(syntax.EmptyEndLine)        // 2
-	emptyBeginText      = int(syntax.EmptyBeginText)      // 4
-	emptyEndText        = int(syntax.EmptyEndText)        // 8
-	emptyWordBoundary   = int(syntax.EmptyWordBoundary)   // 16
-	emptyNoWordBoundary = int(syntax.EmptyNoWordBoundary) // 32
+	emptyBeginLine      = int(syntax.EmptyBeginLine)      //
+	emptyEndLine        = int(syntax.EmptyEndLine)        //
+	emptyBeginText      = int(syntax.EmptyBeginText)      //
+	emptyEndText        = int(syntax.EmptyEndText)        //
+	emptyWordBoundary   = int(syntax.EmptyWordBoundary)   //
+	emptyNoWordBoundary = int(syntax.EmptyNoWordBoundary) //
 )
 
 // capConfig is a live NFA position during construction: a consuming (or Match)
-// instruction plus the capture slots crossed on the unique epsilon path that
-// reached it at the current byte position. pending is sorted and de-duplicated;
-// because every slot in one closure is written at the same position, order does
-// not matter, so a set is sufficient. pending is part of the enclosing state's
-// identity: two occurrences of the same instruction reached with different
-// pending captures are distinct states (e.g. the first vs. later iterations of a
-// `+` loop, where the group-start capture fires only on the first). gate is the
-// OR of empty-width assertion bits crossed on the path (^ $ \b …); the assertion
-// must hold at the config's position.
 type capConfig struct {
 	pc      int
 	pending []int
 	gate    int
 }
 
-// capEdge is one outgoing transition of a capState: the consuming instruction's
-// rune class, the capture-slot writes performed when the edge is taken (recorded
-// at the current byte offset, BEFORE advancing past the rune), and the target
-// state id.
+// capEdge is outgoing transition of a capState: the consuming instruction's
 type capEdge struct {
 	ranges   []capRange
 	anyRune  bool // opRuneAny: matches every rune
@@ -69,7 +39,7 @@ type capEdge struct {
 	next     int
 }
 
-// capState is one state of the capture automaton.
+// capState is state of the capture automaton.
 type capState struct {
 	id           int
 	edges        []capEdge
@@ -86,17 +56,10 @@ type capDFA struct {
 	start     int
 	numSlots  int
 	ascii     bool
-	startGate int // empty-width bits required at position 0 to begin matching
+	startGate int // empty-width bits required at position to begin matching
 }
 
 // buildCapDFA constructs the onepass capture automaton for prog. It returns
-// ok=false if the pattern is not one-pass (ambiguous transitions), uses a
-// fold-case class, carries an empty-width assertion the compiled path cannot
-// evaluate (an interior text anchor), or exceeds the state budget — in every
-// such case the caller falls back to the TDFA path and then, if that also
-// declines, returns an error (there is no interpreter). Leading/trailing text
-// anchors and provably-always-true word boundaries are handled here, not
-// rejected. numGroups excludes group 0.
 func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 	numSlots := (numGroups + 1) * 2
 	d := &capDFA{numSlots: numSlots}
@@ -138,18 +101,6 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 				continue
 			}
 			// A consuming config's gate must hold at that config's position.
-			//   - At the start it is folded into d.startGate (checked once at pos 0).
-			//   - An interior \b/\B is a no-op we drop: dfa.ValidateAssertions runs
-			//     before codegen on every path and admits an interior word-boundary
-			//     assertion ONLY where it is provably always satisfied (both sides
-			//     known, uniform, and consistent with it), so it never rejects a
-			//     real match. Dropping it and building the edge as if the assertion
-			//     were absent is exactly how text anchors fold away at the match
-			//     edges — e.g. (a\Bb) compiles like (ab).
-			//   - An interior text anchor (^ $ \A \z) cannot be evaluated mid-match;
-			//     the validator rejects such a placement upstream, so one reaching
-			//     here means the pattern was not validated. Bail rather than
-			//     miscompile.
 			if c.gate != 0 {
 				switch {
 				case isStart:
@@ -181,12 +132,11 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 		}
 
 		if !edgesDisjoint(st.edges) {
-			return nil, false // ambiguous: some rune selects two instructions
+			return nil, false // ambiguous: some rune selects instructions
 		}
 	}
 
-	// A non-zero start gate is validated once at position 0, so the start state
-	// must not be re-entered mid-match (where the gate would no longer hold).
+	// A non- start gate is validated at position, so the start state
 	if d.startGate != 0 {
 		for _, st := range d.states {
 			for _, e := range st.edges {
@@ -198,7 +148,6 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 	}
 
 	// Only text-anchor (^ $ \A \z, always satisfied at the ends) and word-boundary
-	// gates are resolvable by the compiled path; anything else falls back.
 	if !gateResolvable(d.startGate &^ (emptyBeginText | emptyBeginLine)) {
 		return nil, false
 	}
@@ -213,8 +162,6 @@ func buildCapDFA(prog *syntax.Prog, numGroups int) (*capDFA, bool) {
 }
 
 // gateResolvable reports whether the residual gate (after masking the text-edge
-// bits that are always satisfied at position 0 / end-of-input) is one the
-// compiled path can evaluate: nothing, or a single word-boundary assertion.
 func gateResolvable(residual int) bool {
 	switch residual {
 	case 0, emptyWordBoundary, emptyNoWordBoundary:
@@ -224,13 +171,7 @@ func gateResolvable(residual int) bool {
 	}
 }
 
-// closureFrom computes the epsilon-closure of a single seed program counter,
-// following alternations (leftmost-first: Out before Arg), Nops, and Captures
-// (accumulating the crossed slots), and collecting every reachable consuming or
-// Match instruction as a capConfig. It returns ok=false if it meets an
-// empty-width assertion (unsupported in the compiled path) or a capture slot
-// out of range. The visited set makes the highest-priority path to each
-// instruction win, matching leftmost-first NFA semantics.
+// closureFrom computes the epsilon-closure of a seed program counter,
 func closureFrom(prog *syntax.Prog, numSlots, seed int) ([]capConfig, bool) {
 	cs := &closer{
 		prog:     prog,
@@ -279,10 +220,6 @@ func (cs *closer) walk(pc int) {
 			pc = int(inst.Out)
 		case syntax.InstEmptyWidth:
 			// Accumulate the assertion's required bits onto the path; the gate is
-			// resolved per-position when the config is placed (buildCapDFA): a
-			// start/accept gate becomes an edge word-boundary check, an interior
-			// word boundary is dropped as an always-true no-op, and an interior
-			// text anchor causes a fall back.
 			saved := cs.gate
 			cs.gate |= int(inst.Arg)
 			cs.walk(int(inst.Out))
@@ -308,8 +245,6 @@ func (cs *closer) emit(pc int) {
 }
 
 // instRanges extracts the rune class of a consuming instruction as inclusive
-// ranges (or the any/any-not-NL markers). It returns ok=false for fold-case
-// classes (unsupported in the compiled path) or non-consuming ops.
 func instRanges(prog *syntax.Prog, pc int) (ranges []capRange, anyRune, anyNotNL, ok bool) {
 	inst := &prog.Inst[pc]
 	switch inst.Op {
@@ -345,7 +280,6 @@ func instRanges(prog *syntax.Prog, pc int) (ranges []capRange, anyRune, anyNotNL
 }
 
 // edgeSpans expands an edge to the concrete rune ranges it consumes, so
-// disjointness across edges can be checked uniformly.
 func edgeSpans(e capEdge) []capRange {
 	switch {
 	case e.anyRune:
@@ -358,8 +292,6 @@ func edgeSpans(e capEdge) []capRange {
 }
 
 // edgesDisjoint reports whether the edges' rune classes are pairwise
-// non-overlapping — the core one-pass condition. If any rune could select two
-// different edges, the pattern is ambiguous and cannot be compiled.
 func edgesDisjoint(edges []capEdge) bool {
 	type span struct {
 		lo, hi rune
@@ -381,7 +313,6 @@ func edgesDisjoint(edges []capEdge) bool {
 }
 
 // capIsASCII reports whether every consuming class stays within ASCII, so the
-// generated matcher can use the byte fast-path instead of decoding runes.
 func capIsASCII(d *capDFA) bool {
 	for _, st := range d.states {
 		for _, e := range st.edges {

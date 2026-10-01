@@ -1,15 +1,5 @@
 package codegen
 
-// This file holds the text/template definition for the COMPILED one-pass
-// submatch matcher: the <FuncName>Index core emitted when the pattern admits a
-// single deterministic pass (see onepass.go / onepass_emit.go). It emits NO
-// instruction table, NO op-dispatch switch, NO thread lists, NO epsilon-closure
-// loop, and NO sync.Pool — the automaton IS the Go control flow. Capture-group
-// byte offsets are written inline (caps[k] = pos) on the transitions where a
-// group boundary is crossed, and the result slice is built directly from those
-// registers. The string/names/struct wrappers are shared with the TDFA path
-// (templates_submatch.go).
-
 const onepassIndexFuncTemplate = `
 {{- define "onepassIndexFunc" -}}
 {{- if .OPWordFunc }}

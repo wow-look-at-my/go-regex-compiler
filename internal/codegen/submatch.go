@@ -11,18 +11,16 @@ import (
 type SubmatchOptions struct {
 	PackageName string
 	FuncName    string // e.g. "FindSubmatch" — positional []string API
-	MatchFunc   string // name of the bool match function to call first
+	MatchFunc   string // name of the bool match function to call
 	Regex       string
 	Prog        *syntax.Prog
-	NumGroups   int      // number of capture groups (not counting group 0)
-	GroupNames  []string // names per group index (len NumGroups+1); index 0 == ""
+	NumGroups   int      // number of capture groups (not counting group)
+	GroupNames  []string // names per group index (len NumGroups+); index == ""
 
 	// NamesFuncName is the name of the generated accessor that returns the
-	// group-name slice (parity with regexp.Regexp.SubexpNames). Always emitted.
 	NamesFuncName string
 
 	// Struct controls generation of the typed capture struct. It is only
-	// emitted when StructEnabled is true AND at least one named group exists.
 	StructEnabled bool
 	StructType    string // type name, e.g. "Captures"
 	StructFunc    string // constructor func name, e.g. "FindCaptures"
@@ -35,11 +33,9 @@ type submatchContext struct {
 	MatchFunc     string
 	Regex         string
 	NumSlots      int
-	NumGroups     int // numSlots / 2
+	NumGroups     int // numSlots /
 
-	// Onepass selects the COMPILED one-pass capture matcher: a straight-line
-	// `switch state` automaton with inline caps[k]=pos writes. When true the OP*
-	// fields below drive emission.
+	// Onepass selects the COMPILED -pass capture matcher: a straight-line
 	Onepass     bool
 	OPStart     int
 	OPStates    []onepassEmitState
@@ -49,31 +45,22 @@ type submatchContext struct {
 	HasRanges   bool // compiled path: any match.InRange call emitted
 
 	// Empty-width (\b/\B) boundary gates for the compiled path. Text anchors
-	// (^ $ \A \z) are folded away as always-satisfied at the input ends.
-	OPStartWord     int    // 0 none, 1 first rune must be a word char, 2 must not
-	OPNeedFirstRune bool   // decode the first rune for the start gate
+	OPStartWord     int    // none, rune must be a word char, must not
+	OPNeedFirstRune bool   // decode the rune for the start gate
 	OPNeedLastRune  bool   // decode the last rune for an accept gate
 	OPWordFunc      string // emitted word-char helper name ("" if unused)
 
 	// TDFA selects the COMPILED tagged-DFA capture matcher for patterns with
-	// genuine capture ambiguity that the one-pass path rejects (e.g. `(a*)(a*)`,
-	// `(a|ab)(a*)`, `(?i)abc`). Like the one-pass path it emits a straight-line
-	// `switch state` machine with NO interpreter; unlike it, transitions carry
-	// fixed register operations (set-to-position / copy) over an integer register
-	// file, and the accepting state reads the winning config's register block.
 	TDFA        bool
 	TDStart     int
 	TDRegCount  int      // size of the register file (maxConfigs * numSlots)
-	TDStartInit []string // register writes to initialize the start state at pos 0
+	TDStartInit []string // register writes to initialize the start state at pos
 	TDStates    []tdEmitState
 	TDAccepts   []tdEmitAccept
 	TDHasAccept bool
 	TDUsesPos   bool // any transition sets a register to the current position (np)
 
 	// Priv is an unexported, per-matcher identifier prefix (the index func name
-	// with a lower-cased first rune). The one-pass path uses it to name the
-	// generated word-char helper (<priv>Word) so multiple matchers sharing a
-	// package never collide.
 	Priv string
 
 	// Names accessor.
@@ -87,7 +74,7 @@ type submatchContext struct {
 	StructFields []structField
 }
 
-// structField describes one exported field of the typed capture struct.
+// structField describes exported field of the typed capture struct.
 type structField struct {
 	Name  string // exported Go field name
 	Group int    // capture group index this field reads from
@@ -120,15 +107,6 @@ func buildSubmatchContext(opts SubmatchOptions) (submatchContext, error) {
 	}
 
 	// Every pattern compiles to a straight-line `switch state` machine. There is
-	// NO run-time interpreter anywhere. Two compiled paths, tried in order:
-	//   1. one-pass: when each input rune selects a unique next instruction, emit
-	//      inline capture writes to fixed slots (also handles edge \b/\B, text
-	//      anchors, and provably-always-true interior word boundaries).
-	//   2. TDFA: for genuine capture ambiguity (adjacent stars, overlapping
-	//      alternation, (?i) fold classes), determinize into a register machine
-	//      that resolves the ambiguity at construction time.
-	// If neither applies (an interior text anchor, or DFA state explosion), we
-	// return a clean error — there is no interpreter to fall back to.
 	switch {
 	case tryOnepass(&ctx, opts):
 	case tryTDFA(&ctx, opts):
@@ -136,9 +114,7 @@ func buildSubmatchContext(opts SubmatchOptions) (submatchContext, error) {
 		return submatchContext{}, fmt.Errorf("cannot compile submatch for %q to a state machine: the pattern needs an interior text-anchor assertion the DFA cannot evaluate, or exceeds the DFA state budget", opts.Regex)
 	}
 
-	// Decide whether to emit the typed struct: opt-in AND at least one named
-	// group. The caller (main.go) is responsible for the stderr note when the
-	// flag is set but no named group exists; here we just gate emission.
+	// Decide whether to emit the typed struct: opt-in AND at least named
 	if opts.StructEnabled {
 		fields := deriveStructFields(ctx.GroupNames)
 		if len(fields) > 0 {
@@ -152,8 +128,7 @@ func buildSubmatchContext(opts SubmatchOptions) (submatchContext, error) {
 	return ctx, nil
 }
 
-// tryOnepass fills ctx with the one-pass compiled matcher if the pattern is
-// one-pass, reporting success.
+// tryOnepass fills ctx with the -pass compiled matcher if the pattern is
 func tryOnepass(ctx *submatchContext, opts SubmatchOptions) bool {
 	d, ok := buildCapDFA(opts.Prog, opts.NumGroups)
 	if !ok {
@@ -164,7 +139,6 @@ func tryOnepass(ctx *submatchContext, opts SubmatchOptions) bool {
 }
 
 // tryTDFA fills ctx with the compiled tagged-DFA register matcher if the pattern
-// determinizes within budget, reporting success.
 func tryTDFA(ctx *submatchContext, opts SubmatchOptions) bool {
 	d, ok := buildTDFA(opts.Prog, opts.NumGroups)
 	if !ok {
@@ -174,7 +148,7 @@ func tryTDFA(ctx *submatchContext, opts SubmatchOptions) bool {
 	return true
 }
 
-// normalizeGroupNames returns a slice of length numGroups+1 (index 0 == "").
+// normalizeGroupNames returns a slice of length numGroups+ (index == "").
 func normalizeGroupNames(names []string, numGroups int) []string {
 	out := make([]string, numGroups+1)
 	copy(out, names)
@@ -182,7 +156,7 @@ func normalizeGroupNames(names []string, numGroups int) []string {
 	return out
 }
 
-// HasNamedGroups reports whether any capture group (1..N) carries a name.
+// HasNamedGroups reports whether any capture group (..N) carries a name.
 func HasNamedGroups(names []string) bool {
 	for i := 1; i < len(names); i++ {
 		if names[i] != "" {
@@ -192,13 +166,7 @@ func HasNamedGroups(names []string) bool {
 	return false
 }
 
-// deriveStructFields builds one struct field per NAMED group.
-//
-// KNOWN LIMITATION: two distinct group names that differ only by the case of
-// their first rune (e.g. "ip" and "Ip") both export to the same field name and
-// collide into a single field. We do not attempt to fully disambiguate this;
-// see the README TODO. The last named group with a colliding exported name
-// wins the field's group index.
+// deriveStructFields builds struct field per NAMED group.
 func deriveStructFields(names []string) []structField {
 	var fields []structField
 	seen := make(map[string]int) // exported name -> index into fields
@@ -220,8 +188,6 @@ func deriveStructFields(names []string) []structField {
 }
 
 // exportFieldName converts a regex group name into an exported Go field name:
-// the first rune is upper-cased; if the first rune is not a letter, the name is
-// prefixed with "X" (e.g. "1st" -> "X1st", "ip" -> "Ip").
 func exportFieldName(name string) string {
 	if name == "" {
 		return ""
@@ -233,8 +199,7 @@ func exportFieldName(name string) string {
 	return string(unicode.ToUpper(r)) + name[size:]
 }
 
-// lowerFirst returns s with its first rune lower-cased, yielding an unexported
-// identifier prefix for the per-matcher word-char helper.
+// lowerFirst returns s with its rune lower-cased, yielding an unexported
 func lowerFirst(s string) string {
 	if s == "" {
 		return s

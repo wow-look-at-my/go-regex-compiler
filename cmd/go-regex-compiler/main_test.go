@@ -66,14 +66,11 @@ func TestRunInvalidRegex(t *testing.T) {
 }
 
 // TestRunUnsupportedAssertions verifies that empty-width assertions the DFA
-// cannot honor are rejected with a descriptive error instead of silently
-// generating a wrong matcher (foo\bbar used to full-match "foobar").
 func TestRunUnsupportedAssertions(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 	}{
-		{"mid_word_boundary", []string{"--regex", `foo\bbar`}},
 		{"mid_dollar", []string{"--regex", `a$b`}},
 		{"dollar_in_prefix_mode", []string{"--regex", `ab$`, "--match", "prefix"}},
 		{"caret_in_contains_mode", []string{"--regex", `^abc`, "--match", "contains"}},
@@ -87,9 +84,22 @@ func TestRunUnsupportedAssertions(t *testing.T) {
 	}
 }
 
+// A word boundary is decided by the of characters around it, which the DFA
+func TestRunWordBoundaryCompilesAnywhere(t *testing.T) {
+	for _, tc := range []struct{ name, regex, mode string }{
+		{"interior", `foo\bbar`, "full"},
+		{"leading_contains", `\bcat\b`, "contains"},
+		{"trailing_prefix", `\bused to\b`, "prefix"},
+		{"negated_interior", `foo\Bbar`, "full"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := execute(t, "--regex", tc.regex, "--match", tc.mode)
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestRunSubmatchRequiresFullMode: --submatch with prefix/contains used to
-// generate a self-contradictory pair (Match(input) true while
-// FindSubmatch(input) returned nil, since extraction is full-anchored).
 func TestRunSubmatchRequiresFullMode(t *testing.T) {
 	for _, m := range []string{"prefix", "contains"} {
 		t.Run(m, func(t *testing.T) {
@@ -101,7 +111,6 @@ func TestRunSubmatchRequiresFullMode(t *testing.T) {
 }
 
 // TestRunSupportedAssertions: anchors and word boundaries that are always
-// satisfied at their position keep compiling.
 func TestRunSupportedAssertions(t *testing.T) {
 	for _, pattern := range []string{`^abc$`, `\babc`, `(\w+)\b`} {
 		t.Run(pattern, func(t *testing.T) {
